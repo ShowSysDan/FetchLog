@@ -70,14 +70,16 @@ class LogRouter:
         """Called by the UDP server for each received message."""
         try:
             row_id = self.db.insert_log(entry)
-            entry["id"] = row_id
             self._count += 1
 
             if self._count % 1000 == 0:
                 logger.info("Processed %d messages total", self._count)
 
-            # Schedule WebSocket broadcast on the event loop
-            asyncio.run_coroutine_threadsafe(broadcast_log(entry), self.loop)
+            # Fetch the full row from DB so the WebSocket message has
+            # the same shape as /api/logs responses (all columns present)
+            rows = self.db.get_entries_after(row_id - 1, limit=1)
+            if rows:
+                self.loop.create_task(broadcast_log(rows[0]))
 
         except Exception:
             logger.exception("Error routing message")
