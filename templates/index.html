@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EverythingLogger</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+    <h1>EverythingLogger</h1>
+    <div class="stats">
+        <span><span id="status-dot" class="status-dot"></span> <span id="status-text">Connecting...</span></span>
+        <span>Entries: <strong id="entry-count">0</strong></span>
+        <span>Hosts: <strong id="host-count">0</strong></span>
+    </div>
+    <div class="header-right">
+        <button id="btn-live" class="btn active">Live: ON</button>
+        <button id="btn-marker" class="btn btn-marker">+ Marker</button>
+        <button id="btn-export" class="btn">Export CSV</button>
+    </div>
+</div>
+
+<!-- Toolbar / Filters -->
+<div class="toolbar">
+    <div class="filter-group">
+        <label>Source:</label>
+        <select id="filter-ip">
+            <option value="">All Sources</option>
+        </select>
+    </div>
+
+    <div class="filter-group">
+        <label>Host:</label>
+        <input type="text" id="filter-host" placeholder="hostname...">
+    </div>
+
+    <div class="filter-group">
+        <label>Severity:</label>
+        <select id="filter-severity">
+            <option value="">All</option>
+            <option value="0">Emergency</option>
+            <option value="1">Alert</option>
+            <option value="2">Critical</option>
+            <option value="3">Error</option>
+            <option value="4">Warning</option>
+            <option value="5">Notice</option>
+            <option value="6">Info</option>
+            <option value="7">Debug</option>
+        </select>
+    </div>
+
+    <div class="filter-group">
+        <label>Search:</label>
+        <input type="text" id="filter-search" placeholder="message text...">
+    </div>
+
+    <div class="separator"></div>
+
+    <div class="filter-group">
+        <label>From:</label>
+        <input type="datetime-local" id="filter-start">
+    </div>
+    <div class="filter-group">
+        <label>To:</label>
+        <input type="datetime-local" id="filter-end">
+    </div>
+
+    <div class="separator"></div>
+
+    <button id="btn-clear-filters" class="btn">Clear Filters</button>
+</div>
+
+<!-- Log Table -->
+<div id="log-container" class="log-container">
+    <table class="log-table">
+        <thead>
+            <tr>
+                <th data-sort="timestamp" style="width:155px">Time <span class="sort-arrow"></span></th>
+                <th data-sort="source_ip" style="width:120px">Source IP <span class="sort-arrow"></span></th>
+                <th data-sort="hostname" style="width:130px">Hostname <span class="sort-arrow"></span></th>
+                <th data-sort="severity" style="width:90px">Severity <span class="sort-arrow"></span></th>
+                <th style="width:100px">App</th>
+                <th>Message</th>
+            </tr>
+        </thead>
+        <tbody id="log-body">
+        </tbody>
+    </table>
+</div>
+
+<!-- Auto-scroll button -->
+<button id="scroll-to-bottom" class="autoscroll-indicator">Scroll to latest</button>
+
+<!-- Status Bar -->
+<div class="status-bar">
+    <span id="page-info">Page 1 / 1</span>
+    <div class="pagination">
+        <button id="btn-prev" class="btn" disabled>Prev</button>
+        <button id="btn-next" class="btn" disabled>Next</button>
+    </div>
+</div>
+
+<!-- Marker Modal -->
+<div id="marker-modal" class="modal-overlay">
+    <div class="modal">
+        <h2>Add Marker</h2>
+        <div class="form-group">
+            <label>Label</label>
+            <input type="text" id="marker-label" placeholder="e.g. Event Start, Maintenance Window...">
+        </div>
+        <div class="form-group">
+            <label>Timestamp</label>
+            <input type="datetime-local" id="marker-time">
+        </div>
+        <div class="form-group">
+            <label>Style</label>
+            <select id="marker-style">
+                <option value="default">Default (Purple)</option>
+                <option value="info">Info (Blue)</option>
+                <option value="success">Success (Green)</option>
+                <option value="warning">Warning (Yellow)</option>
+                <option value="danger">Danger (Red)</option>
+            </select>
+        </div>
+        <div class="btn-row">
+            <button id="marker-cancel" class="btn">Cancel</button>
+            <button id="marker-submit" class="btn btn-accent">Add Marker</button>
+        </div>
+    </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
