@@ -11,6 +11,7 @@ Provides:
 import asyncio
 import csv
 import io
+import logging
 from datetime import datetime
 from typing import Optional
 
@@ -48,7 +49,9 @@ async def broadcast_log(entry: dict):
     for ws in ws_clients:
         try:
             await ws.send_json(enriched)
-        except Exception:
+        except Exception as e:
+            logging.getLogger("everythinglogger.ws").debug(
+                "WebSocket send failed: %s", e)
             dead.add(ws)
     ws_clients -= dead
 
