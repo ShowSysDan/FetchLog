@@ -15,6 +15,7 @@ const App = {
     reconnectDelay: 2000,
     knownHosts: [],
     knownIPs: new Set(),
+    knownHostnames: new Set(),
     lastSeenId: 0,
 
     init() {
@@ -43,8 +44,7 @@ const App = {
 
     bindEvents() {
         document.getElementById('filter-ip').addEventListener('change', () => this.applyFilters());
-        document.getElementById('filter-host').addEventListener('input',
-            this.debounce(() => this.applyFilters(), 400));
+        document.getElementById('filter-host').addEventListener('change', () => this.applyFilters());
         document.getElementById('filter-severity').addEventListener('change', () => this.applyFilters());
         document.getElementById('filter-search').addEventListener('input',
             this.debounce(() => this.applyFilters(), 400));
@@ -112,8 +112,11 @@ const App = {
                 if (entry.source_ip && entry.source_ip !== 'marker'
                         && !this.knownIPs.has(entry.source_ip)) {
                     this.knownIPs.add(entry.source_ip);
-                    this.addHostToDropdown(entry);
+                    this.addToDropdowns(entry);
                     this.hostCount.textContent = this.knownIPs.size;
+                } else if (entry.hostname && !this.knownHostnames.has(entry.hostname)) {
+                    // New hostname from a known IP (e.g. after rename)
+                    this.addToDropdowns(entry);
                 }
 
                 if (!this.liveMode) return;
@@ -190,7 +193,11 @@ const App = {
             const data = await resp.json();
             this.knownHosts = data.hosts;
             this.knownIPs = new Set(data.hosts.map(h => h.ip));
-            this.updateHostFilter();
+            this.knownHostnames = new Set(
+                data.hosts.map(h => h.display_name || h.hostname).filter(Boolean)
+            );
+            this.updateIPFilter();
+            this.updateHostnameFilter();
             this.hostCount.textContent = this.knownHosts.length;
         } catch (e) {
             console.error('Failed to load hosts:', e);
@@ -211,7 +218,7 @@ const App = {
                 if (entry.source_ip && entry.source_ip !== 'marker'
                         && !this.knownIPs.has(entry.source_ip)) {
                     this.knownIPs.add(entry.source_ip);
-                    this.addHostToDropdown(entry);
+                    this.addToDropdowns(entry);
                 }
                 if (this.liveMode) this.appendLogRow(entry, true);
             });
@@ -238,12 +245,58 @@ const App = {
         this.entryCount.textContent = this.totalEntries.toLocaleString();
     },
 
-    addHostToDropdown(entry) {
+    // Add a new IP to the Source IP dropdown and/or a new hostname to the
+    // Hostname dropdown. Only appends if not already present.
+    addToDropdowns(entry) {
+        if (entry.source_ip && entry.source_ip !== 'marker'
+                && !this.knownIPs.has(entry.source_ip)) {
+            this.knownIPs.add(entry.source_ip);
+            const opt = document.createElement('option');
+            opt.value = entry.source_ip;
+            opt.textContent = entry.source_ip;   // always show the raw IP
+            document.getElementById('filter-ip').appendChild(opt);
+        }
+
+        const hostname = entry.hostname;
+        if (hostname && !this.knownHostnames.has(hostname)) {
+            this.knownHostnames.add(hostname);
+            const opt = document.createElement('option');
+            opt.value = hostname;
+            opt.textContent = hostname;
+            document.getElementById('filter-host').appendChild(opt);
+        }
+    },
+
+    updateIPFilter() {
         const select = document.getElementById('filter-ip');
-        const opt = document.createElement('option');
-        opt.value = entry.source_ip;
-        opt.textContent = entry.hostname || entry.source_ip;
-        select.appendChild(opt);
+        const cur = select.value;
+        select.innerHTML = '<option value="">All IPs</option>';
+        this.knownHosts.forEach(h => {
+            const opt = document.createElement('option');
+            opt.value = h.ip;
+            opt.textContent = h.ip;   // raw IP address as display text
+            select.appendChild(opt);
+        });
+        select.value = cur;
+    },
+
+    updateHostnameFilter() {
+        const select = document.getElementById('filter-host');
+        const cur = select.value;
+        select.innerHTML = '<option value="">All Hostnames</option>';
+        this.knownHostnames.forEach(name => {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            select.appendChild(opt);
+        });
+        select.value = cur;
+    },
+
+    checkActiveFilters() {
+        const anyActive = Object.values(this.filters).some(v => v);
+        document.getElementById('btn-clear-filters')
+            .classList.toggle('filter-active', anyActive);
     },
 
     appendLogRow(entry, isLive) {
@@ -292,19 +345,6 @@ const App = {
         }
     },
 
-    updateHostFilter() {
-        const select = document.getElementById('filter-ip');
-        const currentVal = select.value;
-        select.innerHTML = '<option value="">All Sources</option>';
-        this.knownHosts.forEach(h => {
-            const opt = document.createElement('option');
-            opt.value = h.ip;
-            opt.textContent = h.display_name || h.hostname || h.ip;
-            select.appendChild(opt);
-        });
-        select.value = currentVal;
-    },
-
     updateSortIndicators() {
         document.querySelectorAll('th[data-sort]').forEach(th => {
             const arrow = th.querySelector('.sort-arrow');
@@ -337,6 +377,7 @@ const App = {
             end_time: this.dateInputToISO(document.getElementById('filter-end').value),
         };
         this.currentPage = 0;
+        this.checkActiveFilters();
         this.loadLogs();
     },
 
@@ -347,6 +388,7 @@ const App = {
         });
         this.filters = {};
         this.currentPage = 0;
+        this.checkActiveFilters();
         this.loadLogs();
     },
 

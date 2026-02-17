@@ -173,6 +173,11 @@ body {
     cursor: default;
     pointer-events: none;
 }
+/* Clear Filters button glows cyan when any filter is active */
+.btn.filter-active {
+    border-color: var(--accent);
+    color: var(--accent);
+}
 .btn.btn-accent {
     background: var(--accent-dim);
     border-color: var(--accent);
@@ -231,6 +236,7 @@ body {
     border-color: var(--accent);
     box-shadow: 0 0 0 2px var(--accent-glow);
 }
+.toolbar select                      { min-width: 130px; }
 .toolbar input[type="text"]          { width: 130px; }
 .toolbar input[type="datetime-local"]{ width: 175px; color-scheme: dark; }
 
@@ -269,7 +275,8 @@ body {
     top: 0;
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border);
-    padding: 5px 10px;
+    box-shadow: inset 0 -1px 0 var(--border);   /* stays crisp when scrolling */
+    padding: 6px 10px;
     text-align: left;
     font-size: 10px;
     font-weight: 600;
