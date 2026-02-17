@@ -194,7 +194,18 @@ const App = {
             const resp = await fetch(`/api/logs?${params}`);
             const data = await resp.json();
             this.totalEntries = data.total;
-            this.renderLogTable(data.entries);
+
+            // In the default live-feed view (sortBy='received_at'), the API
+            // returns newest-first (DESC) but WebSocket appends newest-last.
+            // Reverse so the rendered order matches live mode: oldest at top,
+            // newest at bottom, then scroll down to it.
+            if (this.sortBy === 'received_at') {
+                this.renderLogTable([...data.entries].reverse());
+                this.scrollToBottom();
+            } else {
+                this.renderLogTable(data.entries);
+            }
+
             this.updatePagination();
             this.updateEntryCount();
 
