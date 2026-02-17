@@ -14,7 +14,8 @@ const App = {
     maxReconnectAttempts: 50,
     reconnectDelay: 2000,
     knownHosts: [],
-    statsInterval: null,
+    knownIPs: new Set(),      // for O(1) new-host detection
+    lastSeenId: 0,            // highest entry ID displayed; used for catch-up on reconnect
 
     init() {
         this.logContainer = document.getElementById('log-container');
@@ -30,9 +31,6 @@ const App = {
         this.connectWebSocket();
         this.loadLogs();
         this.loadHosts();
-
-        // Periodic stats update
-        this.statsInterval = setInterval(() => this.updateStats(), 5000);
 
         // Track scroll position for auto-scroll
         this.logContainer.addEventListener('scroll', () => {
@@ -104,17 +102,43 @@ const App = {
         this.ws = new WebSocket(`${proto}://${location.host}/ws`);
 
         this.ws.onopen = () => {
+            const wasReconnect = this.reconnectAttempts > 0;
             this.reconnectAttempts = 0;
             this.statusDot.className = 'status-dot connected';
             this.statusText.textContent = 'Live';
+
+            // Catch up on any entries that arrived while disconnected
+            if (wasReconnect && this.lastSeenId > 0) {
+                this.catchUp();
+            }
         };
 
         this.ws.onmessage = (event) => {
             if (event.data === 'pong') return;
-            if (!this.liveMode) return;
 
             try {
                 const entry = JSON.parse(event.data);
+
+                // Always track the latest ID and update counts, even when
+                // the user has scrolled away or has live mode off, so the
+                // display stays accurate without any polling.
+                if (entry.id && entry.id > this.lastSeenId) {
+                    this.lastSeenId = entry.id;
+                }
+                this.totalEntries++;
+                this.updatePagination();
+                this.updateEntryCount();
+
+                // If this IP is new, add it to the host dropdown immediately
+                if (entry.source_ip && entry.source_ip !== 'marker'
+                        && !this.knownIPs.has(entry.source_ip)) {
+                    this.knownIPs.add(entry.source_ip);
+                    this.addHostToDropdown(entry);
+                    this.hostCount.textContent = this.knownIPs.size;
+                }
+
+                if (!this.liveMode) return;
+
                 this.appendLogRow(entry);
                 if (this.autoScroll) {
                     this.scrollToBottom();
@@ -172,6 +196,12 @@ const App = {
             this.totalEntries = data.total;
             this.renderLogTable(data.entries);
             this.updatePagination();
+            this.updateEntryCount();
+
+            // Seed lastSeenId from the loaded entries
+            data.entries.forEach(e => {
+                if (e.id && e.id > this.lastSeenId) this.lastSeenId = e.id;
+            });
         } catch (e) {
             console.error('Failed to load logs:', e);
         }
@@ -182,22 +212,51 @@ const App = {
             const resp = await fetch('/api/hosts');
             const data = await resp.json();
             this.knownHosts = data.hosts;
+            // Seed the known-IP set so the WebSocket handler can detect new ones
+            this.knownIPs = new Set(data.hosts.map(h => h.ip));
             this.updateHostFilter();
+            this.hostCount.textContent = this.knownHosts.length;
         } catch (e) {
             console.error('Failed to load hosts:', e);
         }
     },
 
-    async updateStats() {
+    // Fetch entries that arrived while the WebSocket was disconnected
+    async catchUp() {
         try {
-            const resp = await fetch('/api/stats');
+            const params = new URLSearchParams({
+                sort_by: 'id',
+                sort_order: 'ASC',
+                limit: 500,
+            });
+            const resp = await fetch(`/api/logs?${params}`);
             const data = await resp.json();
-            this.entryCount.textContent = data.total_entries.toLocaleString();
-            this.hostCount.textContent = data.known_hosts;
-        } catch (e) { /* silent */ }
 
-        // Refresh host list periodically
-        this.loadHosts();
+            // Only append entries newer than what we've already seen
+            const newEntries = data.entries.filter(e => e.id > this.lastSeenId);
+            if (newEntries.length === 0) return;
+
+            newEntries.forEach(entry => {
+                if (entry.id > this.lastSeenId) this.lastSeenId = entry.id;
+                this.totalEntries++;
+
+                if (entry.source_ip && entry.source_ip !== 'marker'
+                        && !this.knownIPs.has(entry.source_ip)) {
+                    this.knownIPs.add(entry.source_ip);
+                    this.addHostToDropdown(entry);
+                }
+
+                if (this.liveMode) this.appendLogRow(entry);
+            });
+
+            this.updatePagination();
+            this.updateEntryCount();
+            this.hostCount.textContent = this.knownIPs.size;
+
+            if (this.liveMode && this.autoScroll) this.scrollToBottom();
+        } catch (e) {
+            console.error('Catch-up fetch failed:', e);
+        }
     },
 
     // ---------- Rendering ----------
@@ -205,6 +264,19 @@ const App = {
     renderLogTable(entries) {
         this.logBody.innerHTML = '';
         entries.forEach(entry => this.appendLogRow(entry, false));
+    },
+
+    updateEntryCount() {
+        this.entryCount.textContent = this.totalEntries.toLocaleString();
+    },
+
+    // Add a single new host to the dropdown without rebuilding the whole list
+    addHostToDropdown(entry) {
+        const select = document.getElementById('filter-ip');
+        const opt = document.createElement('option');
+        opt.value = entry.source_ip;
+        opt.textContent = entry.hostname || entry.source_ip;
+        select.appendChild(opt);
     },
 
     appendLogRow(entry, isLive = true) {

@@ -41,6 +41,7 @@ def set_database(database: LogDatabase):
 
 async def broadcast_log(entry: dict):
     """Send a new log entry to all connected WebSocket clients."""
+    global ws_clients
     if not ws_clients:
         return
     # Enrich entry with human-readable fields
