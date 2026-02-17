@@ -4,6 +4,7 @@ const App = {
     ws: null,
     autoScroll: true,
     liveMode: true,
+    newestFirst: true,            // true = newest at top; persisted in localStorage
     currentPage: 0,
     pageSize: 200,
     totalEntries: 0,
@@ -14,8 +15,8 @@ const App = {
     maxReconnectAttempts: 50,
     reconnectDelay: 2000,
     knownHosts: [],
-    knownIPs: new Set(),      // for O(1) new-host detection
-    lastSeenId: 0,            // highest entry ID displayed; used for catch-up on reconnect
+    knownIPs: new Set(),          // for O(1) new-host detection
+    lastSeenId: 0,                // highest entry ID displayed; used for catch-up on reconnect
 
     init() {
         this.logContainer = document.getElementById('log-container');
@@ -27,17 +28,25 @@ const App = {
         this.pageInfo = document.getElementById('page-info');
         this.scrollBtn = document.getElementById('scroll-to-bottom');
 
+        // Restore persisted order preference
+        const stored = localStorage.getItem('newestFirst');
+        if (stored !== null) this.newestFirst = stored === 'true';
+        this.syncOrderButton();
+
         this.bindEvents();
         this.connectWebSocket();
         this.loadLogs();
         this.loadHosts();
 
-        // Track scroll position for auto-scroll
+        // Track scroll position for auto-scroll.
+        // "At latest" means near the top when newest-first, near the bottom otherwise.
         this.logContainer.addEventListener('scroll', () => {
             const el = this.logContainer;
-            const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
-            this.autoScroll = atBottom;
-            this.scrollBtn.classList.toggle('visible', !atBottom && this.liveMode);
+            const atLatest = this.newestFirst
+                ? el.scrollTop < 50
+                : el.scrollHeight - el.scrollTop - el.clientHeight < 50;
+            this.autoScroll = atLatest;
+            this.scrollBtn.classList.toggle('visible', !atLatest && this.liveMode);
         });
     },
 
@@ -55,9 +64,10 @@ const App = {
         // Buttons
         document.getElementById('btn-clear-filters').addEventListener('click', () => this.clearFilters());
         document.getElementById('btn-live').addEventListener('click', () => this.toggleLive());
+        document.getElementById('btn-order').addEventListener('click', () => this.toggleOrder());
         document.getElementById('btn-marker').addEventListener('click', () => this.showMarkerModal());
         document.getElementById('btn-export').addEventListener('click', () => this.exportCSV());
-        document.getElementById('scroll-to-bottom').addEventListener('click', () => this.scrollToBottom());
+        document.getElementById('scroll-to-bottom').addEventListener('click', () => this.scrollToLatest());
 
         // Pagination
         document.getElementById('btn-prev').addEventListener('click', () => this.prevPage());
@@ -87,11 +97,9 @@ const App = {
             });
         });
 
-        // Keyboard shortcut: Escape to clear filters
+        // Keyboard shortcut: Escape closes modal
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') {
-                this.hideMarkerModal();
-            }
+            if (e.key === 'Escape') this.hideMarkerModal();
         });
     },
 
@@ -119,9 +127,8 @@ const App = {
             try {
                 const entry = JSON.parse(event.data);
 
-                // Always track the latest ID and update counts, even when
-                // the user has scrolled away or has live mode off, so the
-                // display stays accurate without any polling.
+                // Always track the latest ID and update counts even when
+                // live mode is off, so the display stays accurate.
                 if (entry.id && entry.id > this.lastSeenId) {
                     this.lastSeenId = entry.id;
                 }
@@ -140,9 +147,7 @@ const App = {
                 if (!this.liveMode) return;
 
                 this.appendLogRow(entry);
-                if (this.autoScroll) {
-                    this.scrollToBottom();
-                }
+                if (this.autoScroll) this.scrollToLatest();
             } catch (e) {
                 console.error('Failed to parse WS message:', e);
             }
@@ -195,21 +200,26 @@ const App = {
             const data = await resp.json();
             this.totalEntries = data.total;
 
-            // In the default live-feed view (sortBy='received_at'), the API
-            // returns newest-first (DESC) but WebSocket appends newest-last.
-            // Reverse so the rendered order matches live mode: oldest at top,
-            // newest at bottom, then scroll down to it.
+            // The API always returns DESC (newest first) in live-feed mode.
+            // Render in the correct visual order, then jump to "latest".
             if (this.sortBy === 'received_at') {
-                this.renderLogTable([...data.entries].reverse());
-                this.scrollToBottom();
+                if (this.newestFirst) {
+                    // Keep DESC order: newest row is already at the top
+                    this.renderLogTable(data.entries);
+                } else {
+                    // Reverse to ASC: oldest at top, newest at bottom
+                    this.renderLogTable([...data.entries].reverse());
+                }
+                this.scrollToLatest();
             } else {
+                // User-chosen sort column — render as returned, no auto-scroll
                 this.renderLogTable(data.entries);
             }
 
             this.updatePagination();
             this.updateEntryCount();
 
-            // Seed lastSeenId from the loaded entries
+            // Seed lastSeenId
             data.entries.forEach(e => {
                 if (e.id && e.id > this.lastSeenId) this.lastSeenId = e.id;
             });
@@ -223,7 +233,6 @@ const App = {
             const resp = await fetch('/api/hosts');
             const data = await resp.json();
             this.knownHosts = data.hosts;
-            // Seed the known-IP set so the WebSocket handler can detect new ones
             this.knownIPs = new Set(data.hosts.map(h => h.ip));
             this.updateHostFilter();
             this.hostCount.textContent = this.knownHosts.length;
@@ -243,7 +252,7 @@ const App = {
             const resp = await fetch(`/api/logs?${params}`);
             const data = await resp.json();
 
-            // Only append entries newer than what we've already seen
+            // Only append/prepend entries newer than what we've already seen
             const newEntries = data.entries.filter(e => e.id > this.lastSeenId);
             if (newEntries.length === 0) return;
 
@@ -264,7 +273,7 @@ const App = {
             this.updateEntryCount();
             this.hostCount.textContent = this.knownIPs.size;
 
-            if (this.liveMode && this.autoScroll) this.scrollToBottom();
+            if (this.liveMode && this.autoScroll) this.scrollToLatest();
         } catch (e) {
             console.error('Catch-up fetch failed:', e);
         }
@@ -325,18 +334,28 @@ const App = {
                 <td class="msg-cell">${this.escapeHtml(entry.message || '')}</td>`;
         }
 
-        this.logBody.appendChild(tr);
+        // Newest-first: prepend so new rows land at the top.
+        // Newest-last:  append  so new rows land at the bottom.
+        if (this.newestFirst) {
+            this.logBody.prepend(tr);
+        } else {
+            this.logBody.appendChild(tr);
+        }
 
-        // Keep DOM manageable in live mode (max ~2000 rows)
+        // Keep DOM manageable in live mode (max ~2000 rows).
+        // Prune from the end opposite to where new rows are added.
         if (isLive && this.logBody.children.length > 2000) {
-            this.logBody.removeChild(this.logBody.firstChild);
+            if (this.newestFirst) {
+                this.logBody.removeChild(this.logBody.lastChild);
+            } else {
+                this.logBody.removeChild(this.logBody.firstChild);
+            }
         }
     },
 
     updateHostFilter() {
         const select = document.getElementById('filter-ip');
         const currentVal = select.value;
-        // Keep "All Sources" option
         select.innerHTML = '<option value="">All Sources</option>';
         this.knownHosts.forEach(h => {
             const opt = document.createElement('option');
@@ -407,6 +426,22 @@ const App = {
         }
     },
 
+    // ---------- Order Toggle ----------
+
+    toggleOrder() {
+        this.newestFirst = !this.newestFirst;
+        localStorage.setItem('newestFirst', this.newestFirst);
+        this.syncOrderButton();
+        this.autoScroll = true;
+        this.loadLogs();
+    },
+
+    syncOrderButton() {
+        const btn = document.getElementById('btn-order');
+        btn.textContent = this.newestFirst ? '↑ Newest First' : '↓ Newest Last';
+        btn.classList.toggle('active', this.newestFirst);
+    },
+
     // ---------- Pagination ----------
 
     prevPage() {
@@ -429,7 +464,6 @@ const App = {
     showMarkerModal() {
         document.getElementById('marker-modal').classList.add('active');
         document.getElementById('marker-label').focus();
-        // Pre-fill timestamp with now
         const now = new Date();
         now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
         document.getElementById('marker-time').value = now.toISOString().slice(0, 16);
@@ -445,11 +479,7 @@ const App = {
 
         const timeVal = document.getElementById('marker-time').value;
         const style = document.getElementById('marker-style').value;
-
-        let timestamp = null;
-        if (timeVal) {
-            timestamp = new Date(timeVal).toISOString();
-        }
+        const timestamp = timeVal ? new Date(timeVal).toISOString() : null;
 
         try {
             await fetch('/api/markers', {
@@ -484,6 +514,16 @@ const App = {
 
     // ---------- Helpers ----------
 
+    // Scroll to wherever "latest" is — top when newest-first, bottom otherwise
+    scrollToLatest() {
+        if (this.newestFirst) {
+            this.logContainer.scrollTop = 0;
+        } else {
+            this.logContainer.scrollTop = this.logContainer.scrollHeight;
+        }
+    },
+
+    // Keep for any direct calls (e.g. legacy paths)
     scrollToBottom() {
         this.logContainer.scrollTop = this.logContainer.scrollHeight;
     },
