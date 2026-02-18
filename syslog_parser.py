@@ -107,7 +107,7 @@ def parse_message(data: bytes, source_ip: str, source_port: int) -> dict:
         pri = int(match.group(1))
         facility, severity = decode_priority(pri)
         ts_str = match.group(3)
-        hostname = match.group(4) if match.group(4) != "-" else None
+        hostname = (match.group(4).strip() or None) if match.group(4) != "-" else None
         app_name = match.group(5) if match.group(5) != "-" else None
         proc_id = match.group(6) if match.group(6) != "-" else None
         msg_id = match.group(7) if match.group(7) != "-" else None
@@ -143,7 +143,7 @@ def parse_message(data: bytes, source_ip: str, source_port: int) -> dict:
         pri = int(match.group(1))
         facility, severity = decode_priority(pri)
         ts_str = match.group(2)
-        hostname = match.group(3)
+        hostname = match.group(3).strip()
         remaining = match.group(4)
 
         timestamp = parse_rfc3164_timestamp(ts_str) or now

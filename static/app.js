@@ -109,14 +109,10 @@ const App = {
                 this.updatePagination();
                 this.updateEntryCount();
 
-                if (entry.source_ip && entry.source_ip !== 'marker'
-                        && !this.knownIPs.has(entry.source_ip)) {
-                    this.knownIPs.add(entry.source_ip);
-                    this.addToDropdowns(entry);
+                const prevIPCount = this.knownIPs.size;
+                this.addToDropdowns(entry);
+                if (this.knownIPs.size !== prevIPCount) {
                     this.hostCount.textContent = this.knownIPs.size;
-                } else if (entry.hostname && !this.knownHostnames.has(entry.hostname)) {
-                    // New hostname from a known IP (e.g. after rename)
-                    this.addToDropdowns(entry);
                 }
 
                 if (!this.liveMode) return;
@@ -215,11 +211,7 @@ const App = {
             [...newEntries].reverse().forEach(entry => {
                 if (entry.id > this.lastSeenId) this.lastSeenId = entry.id;
                 this.totalEntries++;
-                if (entry.source_ip && entry.source_ip !== 'marker'
-                        && !this.knownIPs.has(entry.source_ip)) {
-                    this.knownIPs.add(entry.source_ip);
-                    this.addToDropdowns(entry);
-                }
+                this.addToDropdowns(entry);
                 if (this.liveMode) this.appendLogRow(entry, true);
             });
 

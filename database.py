@@ -83,7 +83,7 @@ class LogDatabase:
             now,
             entry.get("source_ip", "unknown"),
             entry.get("source_port"),
-            entry.get("hostname"),
+            (entry.get("hostname") or "").strip() or None,
             entry.get("facility"),
             entry.get("severity"),
             entry.get("priority"),
@@ -101,7 +101,7 @@ class LogDatabase:
 
         # Update known_hosts
         ip = entry.get("source_ip", "unknown")
-        hostname = entry.get("hostname")
+        hostname = (entry.get("hostname") or "").strip() or None
         if ip != "marker" and ip != "unknown":
             conn.execute("""
                 INSERT INTO known_hosts (ip, hostname, display_name, first_seen, last_seen, message_count)
