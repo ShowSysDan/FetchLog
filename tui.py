@@ -53,14 +53,14 @@ PAIR_HEADER = 9   # WHITE on BLUE  — header and status bar
 # Column widths (characters)
 # ---------------------------------------------------------------------------
 
-COL_TIME   = 8   # HH:MM:SS
+COL_TIME   = 14  # MM-DD HH:MM:SS
 COL_SOURCE = 15  # source IP
 COL_HOST   = 14  # hostname
 COL_SEV    = 5   # EMERG / WARN / INFO …
 COL_APP    = 12  # app_name
 # MESSAGE width = terminal_width - FIXED_COLS
 # Spacing: one space between each column = 5 separators
-FIXED_COLS = COL_TIME + 1 + COL_SOURCE + 1 + COL_HOST + 1 + COL_SEV + 1 + COL_APP + 1  # = 59
+FIXED_COLS = COL_TIME + 1 + COL_SOURCE + 1 + COL_HOST + 1 + COL_SEV + 1 + COL_APP + 1  # = 65
 
 MAX_BUFFER = 2000   # maximum log entries kept in memory
 
@@ -207,12 +207,14 @@ def _fit(s, width: int) -> str:
 
 
 def _time(entry: dict) -> str:
-    """Extract HH:MM:SS from received_at (or timestamp)."""
+    """Extract MM-DD HH:MM:SS from received_at (or timestamp)."""
     ts = entry.get("received_at") or entry.get("timestamp") or ""
     if "T" in ts:
-        part = ts.split("T", 1)[1]
-        return part[:8]
-    return "?       "
+        date_part, time_part = ts.split("T", 1)
+        # date_part is YYYY-MM-DD; take MM-DD
+        month_day = date_part[5:10] if len(date_part) >= 10 else date_part
+        return f"{month_day} {time_part[:8]}"
+    return "?             "
 
 
 def format_row(entry: dict, msg_width: int) -> str:
