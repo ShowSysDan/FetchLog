@@ -207,13 +207,21 @@ def _fit(s, width: int) -> str:
 
 
 def _time(entry: dict) -> str:
-    """Extract MM-DD HH:MM:SS from received_at (or timestamp)."""
+    """Parse received_at (UTC) and display in local time as MM-DD HH:MM:SS."""
+    import datetime
     ts = entry.get("received_at") or entry.get("timestamp") or ""
     if "T" in ts:
-        date_part, time_part = ts.split("T", 1)
-        # date_part is YYYY-MM-DD; take MM-DD
-        month_day = date_part[5:10] if len(date_part) >= 10 else date_part
-        return f"{month_day} {time_part[:8]}"
+        try:
+            # Normalise to a fixed-width string parseable by fromisoformat
+            s = ts.rstrip("Z").split("+")[0][:19]
+            dt = datetime.datetime.fromisoformat(s).replace(
+                tzinfo=datetime.timezone.utc
+            ).astimezone()
+            return dt.strftime("%m-%d %H:%M:%S")
+        except ValueError:
+            date_part, time_part = ts.split("T", 1)
+            month_day = date_part[5:10] if len(date_part) >= 10 else date_part
+            return f"{month_day} {time_part[:8]}"
     return "?             "
 
 
