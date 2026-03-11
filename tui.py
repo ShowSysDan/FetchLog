@@ -289,7 +289,7 @@ def draw_logs(stdscr, entries: list, log_rows: int, max_x: int, has_colors: bool
         attr = get_attr(entry, has_colors)
         line = format_row(entry, mw)
         try:
-            stdscr.addstr(row, 0, line[:max_x - 1], attr)
+            stdscr.addstr(row, 0, line[:max_x - 1].replace('\x00', '.'), attr)
             stdscr.clrtoeol()
         except curses.error:
             pass
