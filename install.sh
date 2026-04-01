@@ -148,6 +148,15 @@ cmd_install() {
         -not -path "${INSTALL_DIR}/.git/*" \
         -exec chmod o+r {} \; 2>/dev/null || true
 
+    # Ensure every parent directory is traversable so the service user
+    # can reach INSTALL_DIR (e.g. /home/user needs o+x when installed there).
+    local parent
+    parent="$(dirname "${INSTALL_DIR}")"
+    while [[ "${parent}" != "/" ]]; do
+        chmod o+x "${parent}" 2>/dev/null || true
+        parent="$(dirname "${parent}")"
+    done
+
     # Write the systemd unit file
     info "Writing ${SERVICE_FILE}..."
     cat > "${SERVICE_FILE}" <<EOF
