@@ -96,8 +96,8 @@ No external database server needed — SQLite is built into Python.
 Use the included `install.sh` script to install FetchLog as a persistent systemd service
 on any systemd-based Linux distribution (Debian, Ubuntu, RHEL, etc.).
 
-**No virtual environment needed** — the installer sets up Python packages system-wide so
-`python3 app.py` works directly.
+The installer automatically creates a Python virtual environment (`.venv` inside the project
+directory) and uses it for the service — no manual venv setup or system-wide pip installs needed.
 
 ### One-Command Full Install
 
@@ -110,7 +110,7 @@ This runs setup, creates the service, and starts it in one step.
 ### Step-by-Step
 
 ```bash
-# 1. Install Python dependencies system-wide
+# 1. Create virtualenv and install Python dependencies
 sudo ./install.sh setup
 
 # 2. Create the systemd service file and data directory
@@ -146,6 +146,7 @@ the defaults baked into the service file:
 | `FETCHLOG_WEB_PORT` | `8080` | HTTP port for the web dashboard |
 | `FETCHLOG_HOST` | `0.0.0.0` | Bind address |
 | `FETCHLOG_USER` | `fetchlog` | System user account the service runs as |
+| `FETCHLOG_VENV` | `<project-dir>/.venv` | Path for the Python virtual environment |
 
 Example — use port 9090 for the web UI:
 
@@ -167,20 +168,13 @@ sudo systemctl daemon-reload && sudo systemctl restart fetchlog
 | `/etc/systemd/system/fetchlog.service` | Systemd unit file |
 | `/var/lib/fetchlog/logs.db` | Persistent SQLite database |
 | `fetchlog` system user | Unprivileged account the service runs under |
+| `<project-dir>/.venv` | Python virtual environment with all dependencies |
 
 ### PEP 668 / Externally Managed Python
 
-On newer Debian/Ubuntu systems (22.04+), system pip may refuse to install packages globally.
-The installer automatically detects this and retries with `--break-system-packages`.
-
-If you prefer a virtual environment, create one manually and point the service at it:
-
-```bash
-python3 -m venv /opt/fetchlog-venv
-/opt/fetchlog-venv/bin/pip install -r requirements.txt
-# Then edit ExecStart in /etc/systemd/system/fetchlog.service to use:
-# ExecStart=/opt/fetchlog-venv/bin/python3 /path/to/FetchLog/app.py ...
-```
+The installer uses a virtual environment, so system pip restrictions (PEP 668) on newer
+Debian/Ubuntu systems are a non-issue — packages are always installed into the isolated `.venv`
+directory rather than the system Python.
 
 ---
 
@@ -650,16 +644,19 @@ When you create a marker, you can set the timestamp to any time — past, presen
 Use systemd, supervisor, or screen/tmux:
 
 ```bash
-# With systemd (create /etc/systemd/system/fetchlog.service)
+# Recommended: use install.sh which handles everything automatically
+sudo ./install.sh
+
+# Or manually with systemd (create /etc/systemd/system/fetchlog.service)
 [Unit]
 Description=FetchLog Syslog Server
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python3 /path/to/FetchLog/app.py --udp-port 514
+ExecStart=/path/to/FetchLog/.venv/bin/python3 /path/to/FetchLog/app.py --udp-port 514
 WorkingDirectory=/path/to/FetchLog
 Restart=always
-User=root
+User=fetchlog
 
 [Install]
 WantedBy=multi-user.target
