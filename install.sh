@@ -4,7 +4,7 @@
 # =============================================================================
 # Usage:
 #   sudo ./install.sh            # Full install: setup + install + start
-#   sudo ./install.sh setup      # Install Python dependencies system-wide only
+#   sudo ./install.sh setup      # Create virtualenv and install dependencies
 #   sudo ./install.sh install    # Create systemd service only (run setup first)
 #   sudo ./install.sh start      # Start the service
 #   sudo ./install.sh stop       # Stop the service
@@ -16,6 +16,7 @@
 #   FETCHLOG_WEB_PORT   HTTP port for web UI    (default: 8080)
 #   FETCHLOG_HOST       Bind address            (default: 0.0.0.0)
 #   FETCHLOG_USER       Service user account    (default: fetchlog)
+#   FETCHLOG_VENV       Virtual environment dir (default: <project>/.venv)
 # =============================================================================
 
 set -euo pipefail
@@ -36,6 +37,7 @@ UDP_PORT="${FETCHLOG_UDP_PORT:-5514}"
 WEB_PORT="${FETCHLOG_WEB_PORT:-8080}"
 HOST="${FETCHLOG_HOST:-0.0.0.0}"
 SERVICE_USER="${FETCHLOG_USER:-fetchlog}"
+VENV_DIR="${FETCHLOG_VENV:-${INSTALL_DIR}/.venv}"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -50,7 +52,7 @@ require_root() {
 }
 
 # ---------------------------------------------------------------------------
-# setup: install Python dependencies system-wide
+# setup: create virtual environment and install Python dependencies
 # ---------------------------------------------------------------------------
 cmd_setup() {
     require_root
@@ -75,40 +77,20 @@ cmd_setup() {
     fi
     success "Python ${version} at ${python_bin}"
 
-    # Verify pip is available
-    "${python_bin}" -m pip --version >/dev/null 2>&1 \
-        || die "pip not found. Install with: apt-get install python3-pip"
+    # Verify venv module is available
+    "${python_bin}" -m venv --help >/dev/null 2>&1 \
+        || die "Python venv module not found. Install with: apt-get install python3-venv"
 
-    # Attempt pip install; handle PEP 668 externally-managed restriction
+    # Create virtual environment
+    info "Creating virtual environment at ${VENV_DIR}..."
+    "${python_bin}" -m venv "${VENV_DIR}"
+    success "Virtual environment created."
+
+    # Install dependencies into the venv
     info "Installing dependencies from ${REQUIREMENTS}..."
-    local pip_err
-    pip_err="$(mktemp)"
-
-    if "${python_bin}" -m pip install -r "${REQUIREMENTS}" --quiet 2>"${pip_err}"; then
-        success "Dependencies installed."
-    elif grep -q "externally-managed" "${pip_err}" 2>/dev/null; then
-        warn "System pip is externally managed (PEP 668). Retrying with --break-system-packages..."
-        if "${python_bin}" -m pip install -r "${REQUIREMENTS}" --quiet \
-                --break-system-packages 2>"${pip_err}"; then
-            success "Dependencies installed with --break-system-packages."
-        else
-            warn "pip install failed. Output:"
-            cat "${pip_err}" >&2
-            echo ""
-            warn "If you prefer a virtual environment instead, run:"
-            warn "  python3 -m venv /opt/fetchlog-venv"
-            warn "  /opt/fetchlog-venv/bin/pip install -r ${REQUIREMENTS}"
-            warn "Then edit ${SERVICE_FILE} to use /opt/fetchlog-venv/bin/python3"
-            rm -f "${pip_err}"
-            die "Dependency installation failed."
-        fi
-    else
-        warn "pip install failed. Output:"
-        cat "${pip_err}" >&2
-        rm -f "${pip_err}"
-        die "Dependency installation failed."
-    fi
-    rm -f "${pip_err}"
+    "${VENV_DIR}/bin/pip" install -r "${REQUIREMENTS}" --quiet \
+        || die "Dependency installation failed. Check the output above."
+    success "Dependencies installed into ${VENV_DIR}."
 
     # Make app.py directly executable
     chmod +x "${APP_ENTRY}"
@@ -128,13 +110,12 @@ cmd_install() {
     echo "  FetchLog - Service Installation"
     echo "========================================"
 
-    # Confirm Python and dependencies are in place
-    local python_bin
-    python_bin="$(command -v python3 2>/dev/null)" \
-        || die "python3 not found. Run 'sudo $0 setup' first."
+    # Confirm virtual environment and dependencies are in place
+    [[ -x "${VENV_DIR}/bin/python3" ]] \
+        || die "Virtual environment not found at ${VENV_DIR}. Run 'sudo $0 setup' first."
 
-    info "Verifying installed packages..."
-    "${python_bin}" -c "import fastapi, uvicorn, websockets, jinja2, aiofiles, dateutil" \
+    info "Verifying installed packages in ${VENV_DIR}..."
+    "${VENV_DIR}/bin/python3" -c "import fastapi, uvicorn, websockets, jinja2, aiofiles, dateutil" \
         2>/dev/null \
         || die "Required packages are missing. Run 'sudo $0 setup' first."
     success "All packages present."
@@ -185,7 +166,7 @@ Group=${SERVICE_USER}
 # for static files and Jinja2 templates ("static/" and "templates/")
 WorkingDirectory=${INSTALL_DIR}
 
-ExecStart=${python_bin} ${APP_ENTRY} \\
+ExecStart=${VENV_DIR}/bin/python3 ${APP_ENTRY} \\
     --udp-port ${UDP_PORT} \\
     --web-port ${WEB_PORT} \\
     --host ${HOST} \\
@@ -224,6 +205,7 @@ EOF
     info "  Bind address    : ${HOST}"
     info "  Database        : ${DB_PATH}"
     info "  Running as user : ${SERVICE_USER}"
+    info "  Virtual env     : ${VENV_DIR}"
     echo ""
     info "To change these, edit ${SERVICE_FILE} then run: sudo systemctl daemon-reload"
     echo ""
@@ -299,6 +281,7 @@ cmd_uninstall() {
     info "Data preserved at: ${DATA_DIR}"
     info "To fully clean up:"
     info "  sudo rm -rf ${DATA_DIR}"
+    info "  sudo rm -rf ${VENV_DIR}"
     info "  sudo userdel ${SERVICE_USER}"
 }
 
@@ -310,7 +293,7 @@ usage() {
     echo ""
     echo "Commands:"
     echo "  (none)     Full install: setup + install + start"
-    echo "  setup      Install Python dependencies system-wide"
+    echo "  setup      Create virtualenv and install Python dependencies"
     echo "  install    Create and enable systemd service"
     echo "  start      Start the service"
     echo "  stop       Stop the service"
@@ -318,10 +301,11 @@ usage() {
     echo "  uninstall  Remove the service (preserves database)"
     echo ""
     echo "Environment overrides (set before running 'install'):"
-    echo "  FETCHLOG_UDP_PORT   UDP syslog port     (default: 5514)"
-    echo "  FETCHLOG_WEB_PORT   Web UI HTTP port    (default: 8080)"
-    echo "  FETCHLOG_HOST       Bind address        (default: 0.0.0.0)"
-    echo "  FETCHLOG_USER       Service user        (default: fetchlog)"
+    echo "  FETCHLOG_UDP_PORT   UDP syslog port           (default: 5514)"
+    echo "  FETCHLOG_WEB_PORT   Web UI HTTP port          (default: 8080)"
+    echo "  FETCHLOG_HOST       Bind address              (default: 0.0.0.0)"
+    echo "  FETCHLOG_USER       Service user              (default: fetchlog)"
+    echo "  FETCHLOG_VENV       Virtual environment dir   (default: <project>/.venv)"
 }
 
 main() {
