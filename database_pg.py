@@ -17,10 +17,8 @@ import psycopg2.extras
 DEFAULT_CONFIG_PATH = "db_config.json"
 
 
-def load_pg_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
-    """Load PostgreSQL connection settings from a JSON config file."""
-    with open(config_path, "r") as f:
-        config = json.load(f)
+def load_pg_config(config: dict) -> dict:
+    """Extract PostgreSQL connection settings from a config dict."""
     return {
         "host": config.get("host", "localhost"),
         "port": config.get("port", 5432),
@@ -31,8 +29,8 @@ def load_pg_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
 
 
 class LogDatabase:
-    def __init__(self, config_path: str = DEFAULT_CONFIG_PATH):
-        self.pg_config = load_pg_config(config_path)
+    def __init__(self, config: dict):
+        self.pg_config = load_pg_config(config)
         self._local = threading.local()
         self._init_db()
 

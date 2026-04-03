@@ -7,8 +7,8 @@ stores them in a database (SQLite or PostgreSQL), and provides a real-time web U
 for viewing, filtering, marking, and exporting logs.
 
 Usage:
-    python app.py [--udp-port 5514] [--web-port 8080] [--db logs.db]
-    python app.py --db-type postgresql [--db-config db_config.json]
+    python app.py [--udp-port 5514] [--web-port 8080]
+    python app.py --db-config /path/to/db_config.json
 
 Default ports:
     UDP syslog: 5514  (use 514 if running as root for standard syslog)
@@ -18,6 +18,7 @@ Default ports:
 import argparse
 import asyncio
 import importlib
+import json
 import logging
 import os
 import re
@@ -62,6 +63,15 @@ def _parse_requirements(path: str) -> list[tuple[str, str]]:
             import_name = _IMPORT_MAP.get(pkg, pkg.replace("-", "_"))
             entries.append((line, import_name))
     return entries
+
+
+def load_db_config(config_path: str) -> dict:
+    """Load the database config file. Returns defaults for SQLite if file not found."""
+    if os.path.isfile(config_path):
+        with open(config_path) as f:
+            return json.load(f)
+    # No config file = SQLite defaults
+    return {"db_type": "sqlite", "sqlite_path": "logs.db"}
 
 
 def ensure_dependencies(db_type: str = "sqlite"):
@@ -130,17 +140,8 @@ def parse_args():
         help="Bind address (default: 0.0.0.0)"
     )
     parser.add_argument(
-        "--db", type=str, default="logs.db",
-        help="SQLite database file path (default: logs.db)"
-    )
-    parser.add_argument(
-        "--db-type", type=str, default="sqlite",
-        choices=["sqlite", "postgresql"],
-        help="Database backend: sqlite or postgresql (default: sqlite)"
-    )
-    parser.add_argument(
         "--db-config", type=str, default="db_config.json",
-        help="Path to PostgreSQL config file (default: db_config.json)"
+        help="Path to database config file (default: db_config.json)"
     )
     return parser.parse_args()
 
@@ -172,17 +173,19 @@ class LogRouter:
             logger.exception("Error routing message")
 
 
-async def run_app(args):
+async def run_app(args, db_config: dict):
     """Main async entry point - starts UDP server and web server together."""
     # Initialize database
-    if args.db_type == "postgresql":
+    db_type = db_config.get("db_type", "sqlite")
+    if db_type == "postgresql":
         from database_pg import LogDatabase
-        db = LogDatabase(args.db_config)
-        db_label = f"PostgreSQL ({args.db_config})"
+        db = LogDatabase(db_config)
+        db_label = f"PostgreSQL ({db_config.get('host', 'localhost')}:{db_config.get('port', 5432)}/{db_config.get('dbname', 'fetchlog')})"
     else:
         from database import LogDatabase
-        db = LogDatabase(args.db)
-        db_label = args.db
+        sqlite_path = db_config.get("sqlite_path", "logs.db")
+        db = LogDatabase(sqlite_path)
+        db_label = sqlite_path
     set_database(db)
     logger.info("Database initialized: %s", db_label)
 
@@ -236,11 +239,12 @@ async def run_app(args):
 
 def main():
     args = parse_args()
+    db_config = load_db_config(args.db_config)
     # Check and auto-install missing dependencies before importing app modules
-    ensure_dependencies(db_type=args.db_type)
+    ensure_dependencies(db_type=db_config.get("db_type", "sqlite"))
     _load_app_modules()
     try:
-        asyncio.run(run_app(args))
+        asyncio.run(run_app(args, db_config))
     except KeyboardInterrupt:
         print("\nShutdown requested. Goodbye!")
         sys.exit(0)

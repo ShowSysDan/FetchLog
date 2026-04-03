@@ -1,4 +1,8 @@
 {
+    "db_type": "sqlite",
+
+    "sqlite_path": "logs.db",
+
     "host": "localhost",
     "port": 5432,
     "dbname": "fetchlog",
