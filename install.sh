@@ -178,9 +178,7 @@ WorkingDirectory=${INSTALL_DIR}
 ExecStart=${VENV_DIR}/bin/python3 ${APP_ENTRY} \\
     --udp-port ${UDP_PORT} \\
     --web-port ${WEB_PORT} \\
-    --host ${HOST} \\
-    --db ${DB_PATH} \\
-    --db-config ${DATA_DIR}/db_config.json
+    --host ${HOST}
 
 Restart=on-failure
 RestartSec=5
@@ -191,7 +189,7 @@ SyslogIdentifier=fetchlog
 # Security hardening
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=${DATA_DIR}
+ReadWritePaths=${INSTALL_DIR}
 PrivateTmp=true
 
 [Install]
@@ -213,7 +211,7 @@ EOF
     info "  UDP syslog port : ${UDP_PORT}"
     info "  Web UI port     : ${WEB_PORT}"
     info "  Bind address    : ${HOST}"
-    info "  Database        : ${DB_PATH}"
+    info "  Database        : ${INSTALL_DIR}/logs.db (default, see db_config.json)"
     info "  Running as user : ${SERVICE_USER}"
     info "  Virtual env     : ${VENV_DIR}"
     echo ""

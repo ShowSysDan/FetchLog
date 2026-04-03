@@ -170,8 +170,8 @@ sudo systemctl daemon-reload && sudo systemctl restart fetchlog
 | Path | Description |
 |------|-------------|
 | `/etc/systemd/system/fetchlog.service` | Systemd unit file |
-| `/var/lib/fetchlog/db_config.json` | Database configuration (create from example if using PostgreSQL) |
-| `/var/lib/fetchlog/logs.db` | Persistent SQLite database (default backend) |
+| `<project-dir>/logs.db` | SQLite database (default, created on first run) |
+| `<project-dir>/db_config.json` | Database configuration (copy from `db_config.json.example` to switch to PostgreSQL) |
 | `fetchlog` system user | Unprivileged account the service runs under |
 | `<project-dir>/.venv` | Python virtual environment with all dependencies |
 
