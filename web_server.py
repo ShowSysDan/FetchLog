@@ -20,21 +20,20 @@ from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from database import LogDatabase
 from syslog_parser import SEVERITIES, FACILITIES, facility_name, severity_name
 
 app = FastAPI(title="FetchLog", version="1.0.0")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
-# Database instance (set from app.py)
-db: Optional[LogDatabase] = None
+# Database instance (set from app.py) - works with either SQLite or PostgreSQL LogDatabase
+db = None
 
 # Connected WebSocket clients
 ws_clients: set[WebSocket] = set()
 
 
-def set_database(database: LogDatabase):
+def set_database(database):
     global db
     db = database
 

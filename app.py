@@ -3,11 +3,12 @@
 FetchLog - Universal Syslog Server & Log Viewer
 
 A UDP syslog server that accepts messages from any source (syslog or raw strings),
-stores them in SQLite, and provides a real-time web UI for viewing, filtering,
-marking, and exporting logs.
+stores them in a database (SQLite or PostgreSQL), and provides a real-time web UI
+for viewing, filtering, marking, and exporting logs.
 
 Usage:
     python app.py [--udp-port 5514] [--web-port 8080] [--db logs.db]
+    python app.py --db-type postgresql [--db-config db_config.json]
 
 Default ports:
     UDP syslog: 5514  (use 514 if running as root for standard syslog)
@@ -22,7 +23,6 @@ import sys
 
 import uvicorn
 
-from database import LogDatabase
 from syslog_server import start_syslog_server
 from web_server import app, set_database, broadcast_log
 
@@ -55,13 +55,22 @@ def parse_args():
         "--db", type=str, default="logs.db",
         help="SQLite database file path (default: logs.db)"
     )
+    parser.add_argument(
+        "--db-type", type=str, default="sqlite",
+        choices=["sqlite", "postgresql"],
+        help="Database backend: sqlite or postgresql (default: sqlite)"
+    )
+    parser.add_argument(
+        "--db-config", type=str, default="db_config.json",
+        help="Path to PostgreSQL config file (default: db_config.json)"
+    )
     return parser.parse_args()
 
 
 class LogRouter:
     """Routes incoming UDP messages to database and WebSocket clients."""
 
-    def __init__(self, db: LogDatabase, loop: asyncio.AbstractEventLoop):
+    def __init__(self, db, loop: asyncio.AbstractEventLoop):
         self.db = db
         self.loop = loop
         self._count = 0
@@ -88,9 +97,16 @@ class LogRouter:
 async def run_app(args):
     """Main async entry point - starts UDP server and web server together."""
     # Initialize database
-    db = LogDatabase(args.db)
+    if args.db_type == "postgresql":
+        from database_pg import LogDatabase
+        db = LogDatabase(args.db_config)
+        db_label = f"PostgreSQL ({args.db_config})"
+    else:
+        from database import LogDatabase
+        db = LogDatabase(args.db)
+        db_label = args.db
     set_database(db)
-    logger.info("Database initialized: %s", args.db)
+    logger.info("Database initialized: %s", db_label)
 
     loop = asyncio.get_running_loop()
     router = LogRouter(db, loop)
@@ -123,7 +139,7 @@ async def run_app(args):
 ╠══════════════════════════════════════════════════════╣
 ║  UDP Syslog:  {args.host}:{args.udp_port:<30}║
 ║  Web UI:      http://localhost:{args.web_port:<21}║
-║  Database:    {args.db:<38}║
+║  Database:    {db_label:<38}║
 ╠══════════════════════════════════════════════════════╣
 ║  Send syslog:                                        ║
 ║    logger -d -n 127.0.0.1 -P {args.udp_port:<5} "test message"     ║
