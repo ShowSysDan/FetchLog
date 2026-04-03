@@ -1,4 +1,20 @@
 {
+    "_comment_1": "------------------------------------------------------------",
+    "_comment_2": "FetchLog Database Configuration",
+    "_comment_3": "------------------------------------------------------------",
+    "_comment_4": "db_type: which database backend to use.",
+    "_comment_5": "  'sqlite'      - local file-based database (default, no setup needed)",
+    "_comment_6": "  'postgresql'  - remote PostgreSQL server",
+    "_comment_7": "",
+    "_comment_8": "When db_type is 'sqlite', only sqlite_path is used.",
+    "_comment_9": "When db_type is 'postgresql', the host/port/dbname/user/password/schema",
+    "_comment_10": "  fields are used and sqlite_path is ignored.",
+    "_comment_11": "",
+    "_comment_12": "schema: the PostgreSQL schema to create tables in (default: fetchlog).",
+    "_comment_13": "  The schema is created automatically if it does not exist.",
+    "_comment_14": "  All tables, indexes, etc. are created on first startup.",
+    "_comment_15": "------------------------------------------------------------",
+
     "db_type": "sqlite",
 
     "sqlite_path": "logs.db",
@@ -7,5 +23,6 @@
     "port": 5432,
     "dbname": "fetchlog",
     "user": "fetchlog",
-    "password": "your_password_here"
+    "password": "your_password_here",
+    "schema": "fetchlog"
 }

@@ -25,12 +25,14 @@ def load_pg_config(config: dict) -> dict:
         "dbname": config.get("dbname", "fetchlog"),
         "user": config.get("user", "fetchlog"),
         "password": config.get("password", ""),
+        "schema": config.get("schema", "fetchlog"),
     }
 
 
 class LogDatabase:
     def __init__(self, config: dict):
         self.pg_config = load_pg_config(config)
+        self.schema = self.pg_config["schema"]
         self._local = threading.local()
         self._init_db()
 
@@ -50,10 +52,11 @@ class LogDatabase:
     def _init_db(self):
         conn = self._get_conn()
         cur = conn.cursor()
-        cur.execute("CREATE SCHEMA IF NOT EXISTS fetchlog")
-        cur.execute("SET search_path TO fetchlog")
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS fetchlog.log_entries (
+        s = self.schema
+        cur.execute(f"CREATE SCHEMA IF NOT EXISTS {s}")
+        cur.execute(f"SET search_path TO {s}")
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS {s}.log_entries (
                 id BIGSERIAL PRIMARY KEY,
                 timestamp TEXT NOT NULL,
                 received_at TEXT NOT NULL,
@@ -74,18 +77,18 @@ class LogDatabase:
             )
         """)
         # Create indexes
-        for idx_sql in [
-            "CREATE INDEX IF NOT EXISTS idx_timestamp ON fetchlog.log_entries(timestamp)",
-            "CREATE INDEX IF NOT EXISTS idx_received_at ON fetchlog.log_entries(received_at)",
-            "CREATE INDEX IF NOT EXISTS idx_source_ip ON fetchlog.log_entries(source_ip)",
-            "CREATE INDEX IF NOT EXISTS idx_hostname ON fetchlog.log_entries(hostname)",
-            "CREATE INDEX IF NOT EXISTS idx_severity ON fetchlog.log_entries(severity)",
-            "CREATE INDEX IF NOT EXISTS idx_is_marker ON fetchlog.log_entries(is_marker)",
+        for idx_name, col in [
+            ("idx_timestamp", "timestamp"),
+            ("idx_received_at", "received_at"),
+            ("idx_source_ip", "source_ip"),
+            ("idx_hostname", "hostname"),
+            ("idx_severity", "severity"),
+            ("idx_is_marker", "is_marker"),
         ]:
-            cur.execute(idx_sql)
+            cur.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {s}.log_entries({col})")
 
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS fetchlog.known_hosts (
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS {s}.known_hosts (
                 ip TEXT PRIMARY KEY,
                 hostname TEXT,
                 display_name TEXT,
@@ -97,15 +100,15 @@ class LogDatabase:
         conn.commit()
 
     def _set_search_path(self, cur):
-        cur.execute("SET search_path TO fetchlog")
+        cur.execute(f"SET search_path TO {self.schema}")
 
     def insert_log(self, entry: dict) -> int:
         conn = self._get_conn()
         cur = conn.cursor()
         self._set_search_path(cur)
         now = datetime.utcnow().isoformat() + "Z"
-        cur.execute("""
-            INSERT INTO fetchlog.log_entries
+        cur.execute(f"""
+            INSERT INTO {self.schema}.log_entries
                 (timestamp, received_at, source_ip, source_port, hostname,
                  facility, severity, priority, app_name, proc_id, msg_id,
                  message, raw_message, is_syslog, is_marker, marker_style)
@@ -138,13 +141,13 @@ class LogDatabase:
         if ip != "marker" and ip != "unknown":
             cur = conn.cursor()
             self._set_search_path(cur)
-            cur.execute("""
-                INSERT INTO fetchlog.known_hosts (ip, hostname, display_name, first_seen, last_seen, message_count)
+            cur.execute(f"""
+                INSERT INTO {self.schema}.known_hosts (ip, hostname, display_name, first_seen, last_seen, message_count)
                 VALUES (%s, %s, %s, %s, %s, 1)
                 ON CONFLICT(ip) DO UPDATE SET
-                    hostname = COALESCE(EXCLUDED.hostname, fetchlog.known_hosts.hostname),
+                    hostname = COALESCE(EXCLUDED.hostname, {self.schema}.known_hosts.hostname),
                     last_seen = EXCLUDED.last_seen,
-                    message_count = fetchlog.known_hosts.message_count + 1
+                    message_count = {self.schema}.known_hosts.message_count + 1
             """, (ip, hostname, hostname, now, now))
             conn.commit()
 
@@ -173,8 +176,8 @@ class LogDatabase:
             conditions.append("source_ip = %s")
             params.append(source_ip)
         if hostname:
-            conditions.append("(hostname LIKE %s OR source_ip IN "
-                              "(SELECT ip FROM fetchlog.known_hosts WHERE display_name LIKE %s))")
+            conditions.append(f"(hostname LIKE %s OR source_ip IN "
+                              f"(SELECT ip FROM {self.schema}.known_hosts WHERE display_name LIKE %s))")
             params.extend([f"%{hostname}%", f"%{hostname}%"])
         if severity is not None:
             conditions.append("severity <= %s")
@@ -221,7 +224,7 @@ class LogDatabase:
             sort_order = "DESC"
 
         query = f"""
-            SELECT * FROM fetchlog.log_entries
+            SELECT * FROM {self.schema}.log_entries
             {where}
             ORDER BY {sort_by} {sort_order}, id {sort_order}
             LIMIT %s OFFSET %s
@@ -246,14 +249,14 @@ class LogDatabase:
             source_ip, hostname, severity, search,
             start_time, end_time, include_markers)
 
-        cur.execute(f"SELECT COUNT(*) as cnt FROM fetchlog.log_entries {where}", params)
+        cur.execute(f"SELECT COUNT(*) as cnt FROM {self.schema}.log_entries {where}", params)
         return cur.fetchone()["cnt"]
 
     def get_known_hosts(self) -> list[dict]:
         conn = self._get_conn()
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         self._set_search_path(cur)
-        cur.execute("SELECT * FROM fetchlog.known_hosts ORDER BY last_seen DESC")
+        cur.execute(f"SELECT * FROM {self.schema}.known_hosts ORDER BY last_seen DESC")
         return [dict(r) for r in cur.fetchall()]
 
     def update_host_display_name(self, ip: str, display_name: str):
@@ -261,7 +264,7 @@ class LogDatabase:
         cur = conn.cursor()
         self._set_search_path(cur)
         cur.execute(
-            "UPDATE fetchlog.known_hosts SET display_name = %s WHERE ip = %s",
+            f"UPDATE {self.schema}.known_hosts SET display_name = %s WHERE ip = %s",
             (display_name, ip)
         )
         conn.commit()
@@ -270,7 +273,7 @@ class LogDatabase:
         conn = self._get_conn()
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         self._set_search_path(cur)
-        cur.execute("SELECT MAX(id) as max_id FROM fetchlog.log_entries")
+        cur.execute(f"SELECT MAX(id) as max_id FROM {self.schema}.log_entries")
         row = cur.fetchone()
         return row["max_id"] or 0
 
@@ -279,7 +282,7 @@ class LogDatabase:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         self._set_search_path(cur)
         cur.execute(
-            "SELECT * FROM fetchlog.log_entries WHERE id > %s ORDER BY id ASC LIMIT %s",
+            f"SELECT * FROM {self.schema}.log_entries WHERE id > %s ORDER BY id ASC LIMIT %s",
             (after_id, limit)
         )
         return [dict(r) for r in cur.fetchall()]
