@@ -1,6 +1,6 @@
 # FetchLog
 
-A universal syslog server and real-time log viewer. It opens a UDP port that accepts messages from **anything** — standard syslog (RFC 3164/5424) or plain-text strings — stores everything in SQLite, and serves a live web dashboard for viewing, filtering, marking, and exporting logs.
+A universal syslog server and real-time log viewer. It opens a UDP port that accepts messages from **anything** — standard syslog (RFC 3164/5424) or plain-text strings — stores everything in a database (SQLite or PostgreSQL), and serves a live web dashboard for viewing, filtering, marking, and exporting logs.
 
 Built to handle **300+ devices** simultaneously with no performance issues.
 
@@ -31,6 +31,9 @@ Built to handle **300+ devices** simultaneously with no performance issues.
   - [Facility Codes](#facility-codes)
 - [REST API Reference](#rest-api-reference)
 - [Database](#database)
+  - [SQLite (Default)](#sqlite-default)
+  - [PostgreSQL](#postgresql)
+  - [Database Configuration File](#database-configuration-file)
 - [FAQ](#faq)
 
 ---
@@ -43,7 +46,8 @@ Built to handle **300+ devices** simultaneously with no performance issues.
 - **Sortable Columns** — Click column headers to sort by time, source IP, hostname, or severity
 - **Markers** — Insert custom labeled dividers into the log stream (e.g., "Maintenance Start") with timestamps and color styles
 - **CSV Export** — Export filtered results to CSV for reporting or analysis
-- **SQLite + WAL Mode** — High-throughput storage that handles hundreds of concurrent writers without breaking a sweat
+- **SQLite or PostgreSQL** — Use SQLite for zero-config local storage (default), or PostgreSQL for centralized/shared deployments. Configured via a single JSON file
+- **Auto Dependency Install** — Missing Python packages are detected and installed automatically on startup
 - **Auto Host Tracking** — Automatically detects and tracks all devices that send messages, with renameable display names
 - **Severity Color Coding** — Syslog messages are color-coded by severity (red for errors, yellow for warnings, etc.). Non-syslog messages display in neutral gray
 
@@ -52,12 +56,9 @@ Built to handle **300+ devices** simultaneously with no performance issues.
 ## Quick Start
 
 ```bash
-# Clone and install
+# Clone and run — dependencies are installed automatically on first startup
 git clone https://github.com/ShowSysDan/FetchLog.git
 cd FetchLog
-pip install -r requirements.txt
-
-# Run it
 python app.py
 
 # Open http://localhost:8080 in your browser
@@ -71,6 +72,8 @@ echo "Hello from a random device" | nc -u 127.0.0.1 5514
 ## Installation
 
 **Requirements:** Python 3.10+
+
+Dependencies are **installed automatically** on first startup. If you prefer to install them manually:
 
 ```bash
 pip install -r requirements.txt
@@ -86,8 +89,9 @@ pip install -r requirements.txt
 | `jinja2` | HTML template rendering |
 | `aiofiles` | Async static file serving |
 | `python-dateutil` | Date/time parsing utilities |
+| `psycopg2-binary` | PostgreSQL driver (only installed when PostgreSQL is configured) |
 
-No external database server needed — SQLite is built into Python.
+No external database server needed for the default setup — SQLite is built into Python.
 
 ---
 
@@ -166,7 +170,8 @@ sudo systemctl daemon-reload && sudo systemctl restart fetchlog
 | Path | Description |
 |------|-------------|
 | `/etc/systemd/system/fetchlog.service` | Systemd unit file |
-| `/var/lib/fetchlog/logs.db` | Persistent SQLite database |
+| `<project-dir>/logs.db` | SQLite database (default, created on first run) |
+| `<project-dir>/db_config.json` | Database configuration (copy from `db_config.json.example` to switch to PostgreSQL) |
 | `fetchlog` system user | Unprivileged account the service runs under |
 | `<project-dir>/.venv` | Python virtual environment with all dependencies |
 
@@ -191,19 +196,21 @@ python app.py [OPTIONS]
 | `--udp-port` | `5514` | UDP port for receiving log messages |
 | `--web-port` | `8080` | HTTP port for the web UI |
 | `--host` | `0.0.0.0` | Bind address (all interfaces by default) |
-| `--db` | `logs.db` | Path to the SQLite database file |
+| `--db-config` | `db_config.json` | Path to the database configuration file (see [Database Configuration File](#database-configuration-file)) |
+
+The database backend (SQLite vs PostgreSQL), file path, credentials, and schema are all controlled by the config file — not CLI flags. This means your startup command stays the same regardless of which database you use.
 
 **Examples:**
 
 ```bash
-# Default (UDP 5514, Web 8080)
+# Default (UDP 5514, Web 8080, SQLite)
 python app.py
 
 # Standard syslog port (requires root/sudo)
 sudo python app.py --udp-port 514
 
-# Custom everything
-python app.py --udp-port 1514 --web-port 9090 --db /var/log/everything.db
+# Custom ports with config file in a different location
+python app.py --udp-port 1514 --web-port 9090 --db-config /etc/fetchlog/db_config.json
 
 # Bind to specific interface
 python app.py --host 192.168.1.100
@@ -386,10 +393,10 @@ curl -X POST http://localhost:8080/api/hosts/192.168.1.50/name \
 ┌──────────────────────────────────────────────────────────────┐
 │                      Log Router                              │
 │                                                              │
-│  ┌─────────────┐          ┌─────────────────────────────┐    │
-│  │   SQLite DB  │          │  WebSocket Broadcast         │    │
-│  │  (WAL mode)  │          │  (to all connected browsers) │    │
-│  └─────────────┘          └─────────────────────────────┘    │
+│  ┌──────────────────┐     ┌─────────────────────────────┐    │
+│  │  SQLite or        │     │  WebSocket Broadcast         │    │
+│  │  PostgreSQL DB    │     │  (to all connected browsers) │    │
+│  └──────────────────┘     └─────────────────────────────┘    │
 └──────────────────────────────────────────────────────────────┘
                        │
                        ▼
@@ -410,18 +417,21 @@ curl -X POST http://localhost:8080/api/hosts/192.168.1.50/name \
 
 ```
 FetchLog/
-├── app.py              # Main entry point, CLI args, startup
-├── syslog_server.py    # Async UDP listener
-├── syslog_parser.py    # Message parser (RFC 3164/5424/raw)
-├── database.py         # SQLite layer with WAL mode
-├── web_server.py       # FastAPI REST API + WebSocket
+├── app.py                  # Main entry point, CLI args, auto-install, startup
+├── syslog_server.py        # Async UDP listener
+├── syslog_parser.py        # Message parser (RFC 3164/5424/raw)
+├── database.py             # SQLite database layer (WAL mode)
+├── database_pg.py          # PostgreSQL database layer
+├── db_config.json.example  # Example database config (copy to db_config.json)
+├── web_server.py           # FastAPI REST API + WebSocket
+├── install.sh              # Systemd service installer
 ├── templates/
-│   └── index.html      # Web UI template
+│   └── index.html          # Web UI template
 ├── static/
-│   ├── app.js          # Frontend application logic
-│   └── style.css       # Dark terminal-style theme
-├── requirements.txt    # Python dependencies
-└── README.md           # This file
+│   ├── app.js              # Frontend application logic
+│   └── style.css           # Dark terminal-style theme
+├── requirements.txt        # Python dependencies
+└── README.md               # This file
 ```
 
 ---
@@ -602,7 +612,11 @@ Server statistics.
 
 ## Database
 
-FetchLog uses **SQLite** with **WAL (Write-Ahead Logging)** mode, which provides:
+FetchLog supports two database backends. The backend is selected via the `db_config.json` configuration file — your startup command stays the same either way.
+
+### SQLite (Default)
+
+The default backend. No setup required — just run `python app.py`.
 
 - **Concurrent reads during writes** — The web UI can query while messages are being inserted
 - **High write throughput** — Easily handles thousands of inserts per second
@@ -615,11 +629,93 @@ FetchLog uses **SQLite** with **WAL (Write-Ahead Logging)** mode, which provides
 - `cache_size=64MB` — Large in-memory cache
 - `busy_timeout=5000ms` — Wait up to 5 seconds for locks
 
-**Indexes** are created on: `timestamp`, `received_at`, `source_ip`, `hostname`, `severity`, `is_marker`
-
-The database file location defaults to `logs.db` in the current directory. Override with `--db /path/to/database.db`.
-
 **Backup:** Simply copy the `.db` file while the server is running (WAL mode makes this safe).
+
+### PostgreSQL
+
+For centralized, multi-server, or high-availability deployments. Requires a PostgreSQL server (9.5+).
+
+**Setup:**
+
+1. Copy the example config:
+   ```bash
+   cp db_config.json.example db_config.json
+   ```
+
+2. Edit `db_config.json` with your PostgreSQL details:
+   ```json
+   {
+       "db_type": "postgresql",
+       "host": "192.168.1.50",
+       "port": 5432,
+       "dbname": "fetchlog",
+       "user": "fetchlog",
+       "password": "your_password",
+       "schema": "fetchlog"
+   }
+   ```
+
+3. Start FetchLog:
+   ```bash
+   python app.py
+   ```
+
+**That's it.** On first startup, FetchLog will:
+- Auto-install the `psycopg2-binary` driver if it's not already installed
+- Connect to PostgreSQL
+- Create the schema (e.g. `fetchlog`) if it doesn't exist
+- Create all tables (`log_entries`, `known_hosts`) with all columns
+- Create all indexes
+
+No manual SQL or migrations needed. The database is ready to receive logs immediately.
+
+**Prerequisites:** The PostgreSQL user must have permission to create schemas and tables in the target database. You can create the database and user beforehand:
+
+```sql
+CREATE USER fetchlog WITH PASSWORD 'your_password';
+CREATE DATABASE fetchlog OWNER fetchlog;
+```
+
+### Database Configuration File
+
+All database settings live in `db_config.json` (gitignored to protect credentials). Copy the example to get started:
+
+```bash
+cp db_config.json.example db_config.json
+```
+
+**Full reference:**
+
+```json
+{
+    "db_type": "sqlite",
+    "sqlite_path": "logs.db",
+    "host": "localhost",
+    "port": 5432,
+    "dbname": "fetchlog",
+    "user": "fetchlog",
+    "password": "your_password_here",
+    "schema": "fetchlog"
+}
+```
+
+| Setting | Used by | Default | Description |
+|---------|---------|---------|-------------|
+| `db_type` | Both | `sqlite` | Database backend: `sqlite` or `postgresql` |
+| `sqlite_path` | SQLite | `logs.db` | Path to the SQLite database file |
+| `host` | PostgreSQL | `localhost` | PostgreSQL server hostname or IP |
+| `port` | PostgreSQL | `5432` | PostgreSQL server port |
+| `dbname` | PostgreSQL | `fetchlog` | PostgreSQL database name |
+| `user` | PostgreSQL | `fetchlog` | PostgreSQL username |
+| `password` | PostgreSQL | *(empty)* | PostgreSQL password |
+| `schema` | PostgreSQL | `fetchlog` | PostgreSQL schema to create tables in |
+
+When `db_type` is `sqlite`, only `sqlite_path` is used — the PostgreSQL fields are ignored.
+When `db_type` is `postgresql`, the `host`/`port`/`dbname`/`user`/`password`/`schema` fields are used and `sqlite_path` is ignored.
+
+If no `db_config.json` file exists, FetchLog defaults to SQLite with `logs.db` in the current directory.
+
+**Indexes** (created automatically on both backends): `timestamp`, `received_at`, `source_ip`, `hostname`, `severity`, `is_marker`
 
 ---
 
@@ -627,6 +723,15 @@ The database file location defaults to `logs.db` in the current directory. Overr
 
 **Q: Is SQLite really fast enough for 300 devices?**
 Yes. With WAL mode, SQLite handles tens of thousands of writes per second. Typical syslog traffic from 300 devices is well within its capability. The bottleneck would be network I/O long before SQLite becomes an issue.
+
+**Q: When should I use PostgreSQL instead of SQLite?**
+Use PostgreSQL when you need a centralized database accessible from multiple servers, when you want to integrate with existing PostgreSQL infrastructure, or for very high log volumes where you want full database server features (replication, backups, etc.). For single-server deployments, SQLite is simpler and performs great.
+
+**Q: Do I need to create the PostgreSQL tables manually?**
+No. FetchLog automatically creates the schema, tables, and indexes on first startup. Just create the database and user, fill in `db_config.json`, and start the app.
+
+**Q: Do I need to install psycopg2 manually for PostgreSQL?**
+No. FetchLog automatically detects and installs missing dependencies on startup. When you set `db_type` to `postgresql`, the `psycopg2-binary` driver is installed for you if it's not already present.
 
 **Q: Why port 5514 instead of 514?**
 Port 514 is the standard syslog port but requires root/sudo privileges. Port 5514 works without elevated permissions. Use `--udp-port 514` with `sudo` if you need the standard port.
@@ -653,7 +758,7 @@ Description=FetchLog Syslog Server
 After=network.target
 
 [Service]
-ExecStart=/path/to/FetchLog/.venv/bin/python3 /path/to/FetchLog/app.py --udp-port 514
+ExecStart=/path/to/FetchLog/.venv/bin/python3 /path/to/FetchLog/app.py --udp-port 514 --db-config /var/lib/fetchlog/db_config.json
 WorkingDirectory=/path/to/FetchLog
 Restart=always
 User=fetchlog
@@ -668,4 +773,7 @@ nohup python app.py &
 ```
 
 **Q: How big will the database get?**
-Depends on message volume. A rough estimate: ~200 bytes per entry average, so 1 million entries ≈ 200MB. SQLite handles databases up to 281 TB, so storage is effectively limited only by your disk.
+Depends on message volume. A rough estimate: ~200 bytes per entry average, so 1 million entries ≈ 200MB. SQLite handles databases up to 281 TB, and PostgreSQL has no practical size limit, so storage is effectively limited only by your disk.
+
+**Q: Can I switch from SQLite to PostgreSQL later?**
+Yes. Change `db_type` in `db_config.json` from `sqlite` to `postgresql`, fill in the connection details, and restart FetchLog. The PostgreSQL tables are created automatically. Note that existing log data is not migrated — the new database starts empty.

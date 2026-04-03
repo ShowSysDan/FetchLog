@@ -143,6 +143,10 @@ def parse_args():
         "--db-config", type=str, default="db_config.json",
         help="Path to database config file (default: db_config.json)"
     )
+    parser.add_argument(
+        "--db", type=str, default=None,
+        help="SQLite database file path (overrides sqlite_path in config file)"
+    )
     return parser.parse_args()
 
 
@@ -240,6 +244,9 @@ async def run_app(args, db_config: dict):
 def main():
     args = parse_args()
     db_config = load_db_config(args.db_config)
+    # --db flag overrides sqlite_path for backwards compatibility
+    if args.db:
+        db_config["sqlite_path"] = args.db
     # Check and auto-install missing dependencies before importing app modules
     ensure_dependencies(db_type=db_config.get("db_type", "sqlite"))
     _load_app_modules()
