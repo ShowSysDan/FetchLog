@@ -17,22 +17,100 @@ Default ports:
 
 import argparse
 import asyncio
+import importlib
 import logging
 import os
+import re
+import subprocess
 import sys
 
-import uvicorn
-
-from syslog_server import start_syslog_server
-from web_server import app, set_database, broadcast_log
-
-# Configure logging
+# Configure logging early so dependency checks can log
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("fetchlog")
+
+
+# ---- Dependency auto-install ------------------------------------------------
+
+# Map PyPI package names to their Python import names where they differ
+_IMPORT_MAP = {
+    "uvicorn[standard]": "uvicorn",
+    "python-dateutil": "dateutil",
+    "psycopg2-binary": "psycopg2",
+    "aiofiles": "aiofiles",
+    "jinja2": "jinja2",
+    "fastapi": "fastapi",
+    "websockets": "websockets",
+}
+
+
+def _parse_requirements(path: str) -> list[tuple[str, str]]:
+    """Return list of (pip_package, import_name) from a requirements file."""
+    entries = []
+    if not os.path.isfile(path):
+        return entries
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            # Strip version specifiers (>=, ==, ~=, etc.)
+            pkg = re.split(r"[><=!~;]", line)[0].strip()
+            import_name = _IMPORT_MAP.get(pkg, pkg.replace("-", "_"))
+            entries.append((line, import_name))
+    return entries
+
+
+def ensure_dependencies(db_type: str = "sqlite"):
+    """Check that all required packages are importable; pip-install missing ones."""
+    req_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "requirements.txt")
+    requirements = _parse_requirements(req_path)
+
+    missing = []
+    for pip_spec, import_name in requirements:
+        # Skip psycopg2 when using sqlite - no need to install it
+        if import_name == "psycopg2" and db_type != "postgresql":
+            continue
+        try:
+            importlib.import_module(import_name)
+        except ImportError:
+            missing.append(pip_spec)
+
+    if not missing:
+        return
+
+    logger.info("Installing missing dependencies: %s", ", ".join(missing))
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "--quiet"] + missing,
+            stdout=subprocess.DEVNULL,
+        )
+        logger.info("Dependencies installed successfully.")
+        # Clear the import cache so newly installed packages are found
+        importlib.invalidate_caches()
+    except subprocess.CalledProcessError as exc:
+        logger.error("Failed to install dependencies (exit code %d).", exc.returncode)
+        logger.error("Install them manually with:  pip install -r %s", req_path)
+        sys.exit(1)
+
+
+# ---- Imports that depend on installed packages ------------------------------
+# These are deferred until after ensure_dependencies() runs in main().
+
+def _load_app_modules():
+    """Import application modules after dependencies are verified."""
+    global uvicorn, start_syslog_server, fastapi_app, set_database, broadcast_log
+    import uvicorn as _uvicorn
+    uvicorn = _uvicorn
+    from syslog_server import start_syslog_server as _syslog
+    start_syslog_server = _syslog
+    from web_server import app as _app, set_database as _set_db, broadcast_log as _broadcast
+    fastapi_app = _app
+    set_database = _set_db
+    broadcast_log = _broadcast
 
 
 def parse_args():
@@ -122,7 +200,7 @@ async def run_app(args):
 
     # Start web server using uvicorn
     config = uvicorn.Config(
-        app,
+        fastapi_app,
         host=args.host,
         port=args.web_port,
         log_level="info",
@@ -158,6 +236,9 @@ async def run_app(args):
 
 def main():
     args = parse_args()
+    # Check and auto-install missing dependencies before importing app modules
+    ensure_dependencies(db_type=args.db_type)
+    _load_app_modules()
     try:
         asyncio.run(run_app(args))
     except KeyboardInterrupt:
