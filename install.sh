@@ -179,6 +179,7 @@ ExecStart=${VENV_DIR}/bin/python3 ${APP_ENTRY} \\
     --udp-port ${UDP_PORT} \\
     --web-port ${WEB_PORT} \\
     --host ${HOST} \\
+    --db ${DB_PATH} \\
     --db-config ${DATA_DIR}/db_config.json
 
 Restart=on-failure
