@@ -102,9 +102,28 @@ def ensure_dependencies(db_type: str = "sqlite"):
         # Clear the import cache so newly installed packages are found
         importlib.invalidate_caches()
     except subprocess.CalledProcessError as exc:
-        logger.error("Failed to install dependencies (exit code %d).", exc.returncode)
-        logger.error("Install them manually with:  pip install -r %s", req_path)
-        sys.exit(1)
+        logger.warning("Auto-install failed (exit code %d). Checking if packages are already available...", exc.returncode)
+        # Auto-install may fail due to permissions (e.g. service user cannot
+        # write to a venv owned by another user).  Re-check whether the
+        # packages are actually importable -- they may have been installed
+        # earlier by the venv owner.
+        still_missing = []
+        for pip_spec, import_name in requirements:
+            if import_name == "psycopg2" and db_type != "postgresql":
+                continue
+            try:
+                importlib.import_module(import_name)
+            except ImportError:
+                still_missing.append(pip_spec)
+        if still_missing:
+            logger.error("Missing packages that could not be auto-installed: %s", ", ".join(still_missing))
+            logger.error(
+                "Install them manually inside the virtualenv:\n"
+                "  %s -m pip install %s",
+                sys.executable, " ".join(still_missing),
+            )
+            sys.exit(1)
+        logger.info("All required packages are already installed. Continuing.")
 
 
 # ---- Imports that depend on installed packages ------------------------------

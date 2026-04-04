@@ -140,13 +140,18 @@ cmd_install() {
     chmod 750 "${DATA_DIR}"
     success "Data directory ready: ${DATA_DIR}"
 
-    # Grant the service user read access to the application files.
+    # Grant the service user read access to the application files and venv.
     # (Files remain owned by the deploying user so git pull keeps working.)
     chmod o+rX "${INSTALL_DIR}"
     find "${INSTALL_DIR}" \
         -not -path "${INSTALL_DIR}/.git" \
         -not -path "${INSTALL_DIR}/.git/*" \
         -exec chmod o+r {} \; 2>/dev/null || true
+
+    # Ensure venv directories are traversable so the service user can
+    # execute the Python interpreter and import installed packages.
+    find "${VENV_DIR}" -type d -exec chmod o+rx {} \; 2>/dev/null || true
+    find "${VENV_DIR}" -type f -name "python*" -exec chmod o+rx {} \; 2>/dev/null || true
 
     # Ensure every parent directory is traversable so the service user
     # can reach INSTALL_DIR (e.g. /home/user needs o+x when installed there).
@@ -189,7 +194,7 @@ SyslogIdentifier=fetchlog
 # Security hardening
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=${INSTALL_DIR}
+ReadWritePaths=${DATA_DIR} ${INSTALL_DIR}
 PrivateTmp=true
 
 [Install]
@@ -216,6 +221,15 @@ EOF
     info "  Virtual env     : ${VENV_DIR}"
     echo ""
     info "To change these, edit ${SERVICE_FILE} then run: sudo systemctl daemon-reload"
+    echo ""
+    # Check if PostgreSQL is configured; remind user about psycopg2
+    local db_cfg="${INSTALL_DIR}/db_config.json"
+    if [[ -f "${db_cfg}" ]] && grep -q '"postgresql"' "${db_cfg}" 2>/dev/null; then
+        if ! "${VENV_DIR}/bin/python3" -c "import psycopg2" 2>/dev/null; then
+            warn "db_config.json uses PostgreSQL but psycopg2 is not installed."
+            info "Install it now with: ${VENV_DIR}/bin/pip install psycopg2-binary"
+        fi
+    fi
     echo ""
     success "Run 'sudo $0 start' to launch FetchLog."
 }
