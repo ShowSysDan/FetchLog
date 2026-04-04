@@ -102,11 +102,19 @@ class LogDatabase:
     def _set_search_path(self, cur):
         cur.execute(f"SET search_path TO {self.schema}")
 
+    @staticmethod
+    def _clean(value):
+        """Strip NUL bytes that PostgreSQL text columns reject."""
+        if isinstance(value, str):
+            return value.replace("\x00", "")
+        return value
+
     def insert_log(self, entry: dict) -> int:
         conn = self._get_conn()
         cur = conn.cursor()
         self._set_search_path(cur)
         now = datetime.utcnow().isoformat() + "Z"
+        _c = self._clean
         cur.execute(f"""
             INSERT INTO {self.schema}.log_entries
                 (timestamp, received_at, source_ip, source_port, hostname,
@@ -115,22 +123,22 @@ class LogDatabase:
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """, (
-            entry.get("timestamp", now),
+            _c(entry.get("timestamp", now)),
             now,
-            entry.get("source_ip", "unknown"),
+            _c(entry.get("source_ip", "unknown")),
             entry.get("source_port"),
-            (entry.get("hostname") or "").strip() or None,
+            _c((entry.get("hostname") or "").strip()) or None,
             entry.get("facility"),
             entry.get("severity"),
             entry.get("priority"),
-            entry.get("app_name"),
-            entry.get("proc_id"),
-            entry.get("msg_id"),
-            entry.get("message", ""),
-            entry.get("raw_message", ""),
+            _c(entry.get("app_name")),
+            _c(entry.get("proc_id")),
+            _c(entry.get("msg_id")),
+            _c(entry.get("message", "")),
+            _c(entry.get("raw_message", "")),
             1 if entry.get("is_syslog") else 0,
             1 if entry.get("is_marker") else 0,
-            entry.get("marker_style"),
+            _c(entry.get("marker_style")),
         ))
         row_id = cur.fetchone()[0]
         conn.commit()
