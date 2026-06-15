@@ -777,34 +777,35 @@ three apps share one session store.
 
 ### Auth Configuration
 
-Authentication is configured under an `auth` block in `db_config.json`.
-**Auth always uses PostgreSQL**, even when logs are stored in SQLite — the
-connection below must point at the database that contains the `shared` schema
-(i.e. the sibling apps' database). Any field omitted from the `auth` block
-inherits the top-level PostgreSQL setting of the same name.
+Authentication is configured under an `auth` block in `db_config.json`. The
+`shared` schema (users + sessions) lives in the **same PostgreSQL database the
+apps run in** — just a separate schema — so the `auth` block **inherits** the
+top-level `host`/`port`/`dbname`/`user`/`password`. You normally set only
+`enabled` and `shared_schema`; FetchLog reaches its own logs in the `fetchlog`
+schema and the users/sessions in the `shared` schema over the one connection:
 
 ```json
 {
-    "db_type": "sqlite",
-    "sqlite_path": "logs.db",
+    "db_type": "postgresql",
+    "host": "db.internal",
+    "port": 5432,
+    "dbname": "appsdb",
+    "user": "fetchlog",
+    "password": "your_password",
+    "schema": "fetchlog",
 
     "auth": {
         "enabled": true,
-        "host": "192.168.1.50",
-        "port": 5432,
-        "dbname": "theater321",
-        "user": "fetchlog",
-        "password": "your_password",
-        "shared_schema": "shared",
-        "require_flag": "is_app_user",
-        "cookie_name": "session",
-        "cookie_domain": null,
-        "cookie_secure": false,
-        "cookie_samesite": "lax",
-        "session_lifetime_hours": 12
+        "shared_schema": "shared"
     }
 }
 ```
+
+**Auth always uses PostgreSQL**, even if you keep FetchLog's logs in SQLite
+(`db_type: sqlite`) — in that case still fill in the top-level
+`host`/`port`/`dbname`/`user`/`password` (or put them inside the `auth` block) so
+auth can reach the shared database. Override the connection inside `auth` only if
+the `shared` schema ever lives in a different database.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
