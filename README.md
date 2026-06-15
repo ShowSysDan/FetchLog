@@ -34,6 +34,10 @@ Built to handle **300+ devices** simultaneously with no performance issues.
   - [SQLite (Default)](#sqlite-default)
   - [PostgreSQL](#postgresql)
   - [Database Configuration File](#database-configuration-file)
+- [Authentication](#authentication)
+  - [How shared sign-on works](#how-shared-sign-on-works)
+  - [Auth Configuration](#auth-configuration)
+  - [Dependencies & running under gunicorn](#dependencies--running-under-gunicorn)
 - [FAQ](#faq)
 
 ---
@@ -716,6 +720,134 @@ When `db_type` is `postgresql`, the `host`/`port`/`dbname`/`user`/`password`/`sc
 If no `db_config.json` file exists, FetchLog defaults to SQLite with `logs.db` in the current directory.
 
 **Indexes** (created automatically on both backends): `timestamp`, `received_at`, `source_ip`, `hostname`, `severity`, `is_marker`
+
+---
+
+## Authentication
+
+FetchLog uses the same **shared single sign-on** as the sibling apps (Leash and
+321Theater). When auth is enabled, the web UI and the entire REST/WebSocket API
+require a logged-in session, and **only users whose role is `admin` may sign in.**
+
+A user who is already logged into 321Theater or Leash is automatically signed in
+to FetchLog (and vice-versa) — there is no second password prompt — because all
+three apps share one session store.
+
+### How shared sign-on works
+
+- **Sessions are stored server-side** in the PostgreSQL table
+  `<shared_schema>.app_sessions`. The browser cookie (`session`) holds only an
+  opaque 256-bit random id — never any signed data — so the apps do **not** need
+  to share a Flask `SECRET_KEY`. (FetchLog, being FastAPI, has no secret key at
+  all; session security rests on the unguessable id + server-side storage.)
+- **Users are read from `<shared_schema>.users`**, which is owned and created by
+  321Theater. FetchLog treats it as **read-only** — it never creates or modifies
+  users and never changes passwords. Passwords are verified with Werkzeug
+  (scrypt), matching how the siblings store them.
+- The role is re-read from the database on every request, so a demotion or
+  deletion in 321Theater takes effect on FetchLog immediately.
+- FetchLog creates the `app_sessions` table (and its indexes) on first start if
+  it does not already exist — the same idempotent migration the siblings run.
+
+> **Same-origin requirement.** For the browser to send the one shared cookie to
+> all three apps, they must be served on the same hostname or a shared parent
+> domain. For different sub-domains, set `cookie_domain` (e.g. `.example.com`) to
+> the same value in every app.
+
+> **"Tagged with Admin"** maps to the `role` text column having the value
+> `admin`. There is no separate `is_admin` flag or tags table. The siblings also
+> admit `staff`; FetchLog is intentionally stricter (admins only), controlled by
+> `allowed_roles`.
+
+### Auth Configuration
+
+Authentication is configured under an `auth` block in `db_config.json`.
+**Auth always uses PostgreSQL**, even when logs are stored in SQLite — the
+connection below must point at the database that contains the `shared` schema
+(i.e. the sibling apps' database). Any field omitted from the `auth` block
+inherits the top-level PostgreSQL setting of the same name.
+
+```json
+{
+    "db_type": "sqlite",
+    "sqlite_path": "logs.db",
+
+    "auth": {
+        "enabled": true,
+        "host": "192.168.1.50",
+        "port": 5432,
+        "dbname": "theater321",
+        "user": "fetchlog",
+        "password": "your_password",
+        "shared_schema": "shared",
+        "allowed_roles": ["admin"],
+        "cookie_name": "session",
+        "cookie_domain": null,
+        "cookie_secure": false,
+        "cookie_samesite": "lax",
+        "session_lifetime_hours": 12
+    }
+}
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `enabled` | `false` | Master switch. `false` disables the login gate (development only — the UI/API are then open). |
+| `host` / `port` / `dbname` / `user` / `password` | *(inherits top-level)* | PostgreSQL connection to the database holding the `shared` schema. |
+| `shared_schema` | `shared` | Schema containing the shared `users` and `app_sessions` tables. |
+| `allowed_roles` | `["admin"]` | Roles permitted to sign in to FetchLog. |
+| `cookie_name` | `session` | Session cookie name. **Must match the sibling apps** (they use Flask's default `session`). |
+| `cookie_domain` | `null` | Set to a shared parent domain (e.g. `.example.com`) for cross-subdomain SSO; leave `null` for same-host. **Must match the siblings.** |
+| `cookie_secure` | `false` | Set `true` to mark the cookie HTTPS-only. Recommended whenever you serve over HTTPS. |
+| `cookie_samesite` | `lax` | Cookie SameSite policy. **Must match the siblings.** |
+| `session_lifetime_hours` | `12` | Session lifetime. |
+
+The shared tables (managed by 321Theater) look like this:
+
+```sql
+-- read-only for FetchLog; owned by 321Theater
+shared.users(id, username, password_hash, role, display_name,
+             must_change_password, ...);
+-- the server-side session store
+shared.app_sessions(sid PRIMARY KEY, user_id REFERENCES shared.users(id),
+                    data, created_at, last_seen, expires_at);
+```
+
+> **Default admin.** 321Theater seeds an `admin` / `admin123` account with
+> `must_change_password` set. Because FetchLog never writes the users table,
+> change that password in 321Theater before relying on it.
+
+If the shared database is unreachable while auth is enabled, FetchLog **fails
+closed** — every request is denied — rather than silently exposing the UI.
+
+### Dependencies & running under gunicorn
+
+The auth layer adds these packages (already in `requirements.txt`, installed by
+`sudo ./install.sh setup` or `pip install -r requirements.txt`):
+
+- **`werkzeug`** — scrypt password verification, compatible with the siblings.
+- **`python-multipart`** — lets FastAPI parse the login form POST.
+- **`psycopg2-binary`** — PostgreSQL driver (already required for the Postgres
+  log backend; now also required whenever auth is enabled).
+- **`gunicorn`** — production process manager (see below).
+
+`install.sh` runs FetchLog under **gunicorn with the uvicorn worker class**:
+
+```bash
+gunicorn web_server:app --worker-class uvicorn.workers.UvicornWorker --workers 1 --bind 0.0.0.0:8080
+```
+
+> **Run exactly one worker (`--workers 1`).** FetchLog is a single-process app by
+> design: one process binds the UDP syslog socket and fans out the live
+> WebSocket feed from in-memory state. Multiple workers would double-bind the UDP
+> port and split WebSocket clients so live updates reach only some of them. The
+> UDP port and bind host are supplied via the `FETCHLOG_UDP_PORT` / `FETCHLOG_HOST`
+> environment variables because the UDP listener is started by the app's startup
+> lifespan (not a CLI flag) so it also runs under gunicorn.
+
+For development you can still run `python app.py` (which launches uvicorn
+directly and starts the same lifespan), and you can disable auth entirely with
+`"enabled": false`.
 
 ---
 
