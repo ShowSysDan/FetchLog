@@ -733,6 +733,15 @@ A user who is already logged into 321Theater or Leash is automatically signed in
 to FetchLog (and vice-versa) — there is no second password prompt — because all
 three apps share one session store.
 
+> 📄 **Reusing this on another project?** See [`SHARED_AUTH.md`](SHARED_AUTH.md)
+> for a full, Flask-first guide to the shared-session scheme: the `shared` schema,
+> the session backend code, cookie rules, and a new-app porting checklist.
+
+> **Note:** only the **web UI, REST API, and live WebSocket feed** sit behind the
+> login. The **UDP syslog server keeps receiving, parsing, and storing logs from
+> devices regardless of whether anyone is logged in** — even if the shared auth
+> database is unreachable. Login controls *viewing*, never *ingestion*.
+
 ### How shared sign-on works
 
 - **Sessions are stored server-side** in the PostgreSQL table
