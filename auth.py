@@ -167,24 +167,47 @@ class AuthManager:
     # ---------- initialization ----------
 
     def connect_and_init(self) -> bool:
-        """Connect and make sure the shared session table exists.
+        """Connect, ensure the session store is usable, and verify the user table.
 
-        Returns True on success. On failure logs the cause and returns False;
-        the caller keeps auth enabled so the server fails *closed* (every
-        request is denied) rather than silently running without protection.
+        FetchLog reads the shared user directory and only needs DML on
+        ``app_sessions``. If it has no DDL rights on the shared schema (which
+        321Theater owns), that's fine as long as ``app_sessions`` already exists
+        — we fall back to verifying it. Returns True only when both the session
+        store and ``users`` are reachable; otherwise logs the cause and returns
+        False, so the caller keeps auth enabled and the server fails *closed*.
         """
+        s = self.shared_schema
+
+        # 1) Create app_sessions if we can; otherwise verify it already exists.
+        store_ok = False
         try:
             self._ensure_session_table()
-            return True
+            store_ok = True
+        except Exception:
+            logger.warning(
+                "auth: could not run the app_sessions migration (no DDL rights on "
+                "schema '%s'?). Checking for an existing table...", s, exc_info=True)
+            try:
+                self._fetchone(f'SELECT 1 FROM "{s}".app_sessions LIMIT 1')
+                store_ok = True
+                logger.info("auth: '%s'.app_sessions already exists; continuing "
+                            "without migration.", s)
+            except Exception:
+                logger.exception(
+                    "auth: session store '%s'.app_sessions is not usable "
+                    "(host=%s port=%s db=%s).", s, self.host, self.port, self.dbname)
+
+        # 2) Verify the shared user directory is readable.
+        users_ok = False
+        try:
+            self._fetchone(f'SELECT 1 FROM "{s}".users LIMIT 1')
+            users_ok = True
         except Exception:
             logger.exception(
-                "auth: failed to initialize shared session store "
-                "(host=%s port=%s db=%s schema=%s). Is the database reachable "
-                "and does the '%s' schema contain the 'users' table?",
-                self.host, self.port, self.dbname, self.shared_schema,
-                self.shared_schema,
-            )
-            return False
+                "auth: '%s'.users is not readable. Is 321Theater's schema present, "
+                "and is this DB role granted SELECT on it?", s)
+
+        return store_ok and users_ok
 
     def _ensure_session_table(self) -> None:
         s = self.shared_schema

@@ -38,6 +38,7 @@ Built to handle **300+ devices** simultaneously with no performance issues.
   - [How shared sign-on works](#how-shared-sign-on-works)
   - [Auth Configuration](#auth-configuration)
   - [Dependencies & running under gunicorn](#dependencies--running-under-gunicorn)
+  - [Upgrading an existing install](#upgrading-an-existing-install)
 - [FAQ](#faq)
 
 ---
@@ -863,6 +864,65 @@ gunicorn web_server:app --worker-class uvicorn.workers.UvicornWorker --workers 1
 For development you can still run `python app.py` (which launches uvicorn
 directly and starts the same lifespan), and you can disable auth entirely with
 `"enabled": false`.
+
+### Upgrading an existing install
+
+FetchLog's config is **`db_config.json`** (JSON) — there is no `.ini` file (the
+`db_config.ini` is 321Theater's). Because `db_config.json` is gitignored, a
+`git pull` never touches your config — which also means **a pull alone does not
+turn auth on.** To upgrade an existing deployment and enable the login:
+
+```bash
+cd /path/to/FetchLog
+git pull
+```
+
+1. **Install the new venv dependencies** (`werkzeug`, `python-multipart`,
+   `gunicorn`). A `git pull` does not install them, and the service user usually
+   can't write to the venv, so install them explicitly as the deploying user:
+   ```bash
+   sudo ./install.sh setup          # runs: pip install -r requirements.txt
+   ```
+
+2. **Enable auth in `db_config.json`** — add the [`auth` block](#auth-configuration),
+   pointing at the database that holds the `shared` schema. Without this block,
+   `enabled` is false and FetchLog keeps running **unauthenticated** (exactly as
+   before the upgrade).
+
+3. **Grant the FetchLog DB role access to the shared schema** (once, as a
+   Postgres admin). FetchLog reads users and reads/writes sessions:
+   ```sql
+   GRANT USAGE ON SCHEMA shared TO fetchlog;
+   GRANT SELECT ON shared.users TO fetchlog;
+   GRANT SELECT, INSERT, UPDATE, DELETE ON shared.app_sessions TO fetchlog;
+   -- Optional: only if FetchLog should auto-create app_sessions on first boot
+   -- GRANT CREATE ON SCHEMA shared TO fetchlog;
+   ```
+   If `app_sessions` already exists (321Theater created it), the `CREATE` grant
+   is unnecessary — FetchLog detects the existing table and uses it.
+
+4. **Restart** — either:
+   - **Switch to the gunicorn unit (recommended):** re-run the installer to
+     rewrite the systemd unit with the new gunicorn `ExecStart`:
+     ```bash
+     sudo ./install.sh install        # rewrites the unit + daemon-reload
+     sudo ./install.sh start
+     ```
+   - **Keep your current unit:** the old `python app.py` systemd unit still works
+     (it starts the same auth + UDP lifespan). Just restart:
+     ```bash
+     sudo systemctl restart fetchlog
+     ```
+
+**No FetchLog SQL migration is required.** FetchLog never creates or alters
+`shared.users`; the `is_app_user` / `is_app_admin` columns are added by
+321Theater's migration. FetchLog only auto-creates `shared.app_sessions` (once,
+idempotently) when it has rights and the table is missing.
+
+Confirm it came up correctly — look for `Auth ENABLED` in the log:
+```bash
+journalctl -u fetchlog -n 30 --no-pager
+```
 
 ---
 

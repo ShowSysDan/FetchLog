@@ -213,6 +213,22 @@ SQLALCHEMY_ENGINE_OPTIONS = {
 > Postgres identifiers can't be bound parameters. If you ever interpolate a
 > schema name into SQL, validate it first against `^[A-Za-z_][A-Za-z0-9_]*$`.
 
+**Database grants (least privilege).** A consuming app only needs to read users
+and read/write sessions — it does **not** need DDL on the shared schema:
+
+```sql
+GRANT USAGE ON SCHEMA shared TO myapp;
+GRANT SELECT ON shared.users TO myapp;
+GRANT SELECT, INSERT, UPDATE, DELETE ON shared.app_sessions TO myapp;
+-- Optional, only if this app should auto-create app_sessions on first boot:
+-- GRANT CREATE ON SCHEMA shared TO myapp;
+```
+
+The `users` columns (`role`, `is_app_user`, `is_app_admin`, …) are created and
+migrated by 321Theater; consuming apps must not alter them. If your app can't run
+the `app_sessions` migration, fall back to verifying the table already exists
+rather than failing startup.
+
 ### 4.2 Install the server-side session backend
 
 This is the heart of the integration. Drop this in and register it. It stores
