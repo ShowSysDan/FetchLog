@@ -83,6 +83,9 @@ CREATE TABLE IF NOT EXISTS shared.users (
     is_scheduler         INTEGER DEFAULT 0,
     is_asset_manager     INTEGER DEFAULT 0,
     is_document_viewer   INTEGER DEFAULT 0,
+    -- Cross-app access flags (set in 321Theater; each app decides what to require)
+    is_app_user          INTEGER DEFAULT 0,   -- "user of the shared apps"
+    is_app_admin         INTEGER DEFAULT 0,   -- "admin of the shared apps"
     viewer_venues        TEXT DEFAULT NULL,
     viewer_doc_types     TEXT DEFAULT NULL,
     home_layout          TEXT DEFAULT 'columns',
@@ -119,8 +122,24 @@ table.**
 | `staff`    | Elevated/content user. |
 | `user`     | Ordinary user. |
 
-Each app decides **which roles may sign in to it**. For example, Leash admits
-`admin` + `staff`; FetchLog admits **`admin` only**. Gate on the `role` string.
+Each app decides **who may sign in to it**, by either of two signals:
+
+- **By role** (`role` string) — e.g. Leash admits `admin` + `staff`.
+- **By cross-app flag** (recommended for new ancillary apps) — two independent
+  per-user flags in the shared directory let an app gate access without touching
+  `role`:
+
+  | Flag | Meaning |
+  |------|---------|
+  | `is_app_user`  | "this account is a user of the shared apps" |
+  | `is_app_admin` | "this account is an administrator of the shared apps" |
+
+  The flags are **fully independent** — all four combinations `(0,0) (1,0) (0,1)
+  (1,1)` are valid; admin does **not** imply user. They are `INTEGER` `0/1`
+  (default `0`), set by an admin in 321Theater, which applies no behavior of its
+  own — **the consuming app owns their meaning**. FetchLog, for instance, gates
+  **login on `is_app_user`** and reads `is_app_admin` for future admin-only
+  features. Check whichever flag(s) your app needs.
 
 ### 2.4 Password hashing
 
@@ -343,7 +362,7 @@ def get_user_by_username(username):
     try:
         return db.execute(
             "SELECT id, username, password_hash, role, display_name, "
-            "       must_change_password, is_readonly "
+            "       must_change_password, is_readonly, is_app_user, is_app_admin "
             "FROM users WHERE username = %s LIMIT 1", (username,)
         ).fetchone()
     finally:
@@ -353,19 +372,22 @@ def get_user_by_username(username):
 ### 4.5 Login & logout routes
 
 ```python
-# Roles allowed to sign in to THIS app (customize per app).
-_ALLOWED_ROLES = frozenset({'admin'})            # FetchLog example; Leash also allows 'staff'
+# How THIS app gates access (customize per app): a cross-app flag (recommended)
+# or a role. FetchLog uses the 'is_app_user' flag.
+_REQUIRE_FLAG = 'is_app_user'                    # or 'is_app_admin', or gate on role
 _DUMMY_HASH = 'scrypt:32768:8:1$dummy$' + '0' * 64  # anti-enumeration timing
 
 def _populate_session(session, user):
     """Write the session keys the family relies on."""
     session.clear()                              # session-fixation defense
-    session['user_id']      = user['id']
-    session['username']     = user['username']
-    session['display_name'] = user['display_name'] or user['username']
-    session['user_role']    = user['role']       # 321Theater reads this key
-    session['role']         = user['role']        # Leash reads this key — set BOTH
-    session['is_readonly']  = bool(user.get('is_readonly', 0))
+    session['user_id']       = user['id']
+    session['username']      = user['username']
+    session['display_name']  = user['display_name'] or user['username']
+    session['user_role']     = user['role']      # 321Theater reads this key
+    session['role']          = user['role']      # Leash reads this key — set BOTH
+    session['is_readonly']   = bool(user.get('is_readonly', 0))
+    session['is_app_user']   = bool(user.get('is_app_user', 0))
+    session['is_app_admin']  = bool(user.get('is_app_admin', 0))
     session['_role_checked_at'] = datetime.utcnow().timestamp()
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -381,7 +403,7 @@ def login():
             flash('Invalid username or password.', 'error')
         elif not check_password_hash(user['password_hash'], password):
             flash('Invalid username or password.', 'error')
-        elif user['role'] not in _ALLOWED_ROLES:
+        elif not user.get(_REQUIRE_FLAG):        # gate on the cross-app flag
             flash('Your account does not have access to this app.', 'error')
         else:
             # Mint a fresh sid so the post-login cookie differs from any pre-login one
@@ -434,12 +456,14 @@ def _refresh_session_roles():
         return
     if datetime.utcnow().timestamp() - session.get('_role_checked_at', 0) < 300:
         return
-    user = get_user_by_id(session['user_id'])
-    if not user:                       # deleted -> force re-login
+    user = get_user_by_id(session['user_id'])    # must also SELECT the flags you gate on
+    if not user or not user.get(_REQUIRE_FLAG):  # deleted or access revoked -> re-login
         session.clear()
         return redirect(url_for('login'))
-    session['user_role'] = user['role']
-    session['role']      = user['role']
+    session['user_role']    = user['role']
+    session['role']         = user['role']
+    session['is_app_user']  = bool(user.get('is_app_user', 0))
+    session['is_app_admin'] = bool(user.get('is_app_admin', 0))
     session['_role_checked_at'] = datetime.utcnow().timestamp()
 ```
 
@@ -535,6 +559,7 @@ session-data keys — it cannot rely on Flask's `SessionInterface` to do it.
 - [ ] Cookie config matches the family (name `session`, SameSite `Lax`, domain).
 - [ ] Users read from `shared.users` (no private users table).
 - [ ] Login sets `user_id`, `username`, `role` **and** `user_role`, …; regenerates `sid`.
+- [ ] App gates access on the intended signal (`is_app_user` / `is_app_admin` flag, or `role`), re-checked in `before_request`.
 - [ ] `login_required` / `admin_required` (or app-specific role gate) applied.
 - [ ] `before_request` re-reads role from DB periodically.
 - [ ] Passwords verified with Werkzeug; new users (321Theater only) hashed with Werkzeug.

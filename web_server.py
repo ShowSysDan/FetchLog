@@ -125,9 +125,9 @@ async def lifespan(app_: FastAPI):
     if auth_mgr.enabled:
         if auth_mgr.connect_and_init():
             logger.info(
-                "Auth ENABLED - shared schema '%s' on %s:%s/%s (allowed roles: %s)",
+                "Auth ENABLED - shared schema '%s' on %s:%s/%s (login gate: %s=1)",
                 auth_mgr.shared_schema, auth_mgr.host, auth_mgr.port,
-                auth_mgr.dbname, ", ".join(sorted(auth_mgr.allowed_roles)))
+                auth_mgr.dbname, auth_mgr.require_flag)
         else:
             logger.error(
                 "Auth is ENABLED but the shared session store could not be "

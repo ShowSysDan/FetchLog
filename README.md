@@ -727,7 +727,8 @@ If no `db_config.json` file exists, FetchLog defaults to SQLite with `logs.db` i
 
 FetchLog uses the same **shared single sign-on** as the sibling apps (Leash and
 321Theater). When auth is enabled, the web UI and the entire REST/WebSocket API
-require a logged-in session, and **only users whose role is `admin` may sign in.**
+require a logged-in session, and **only accounts whose `is_app_user` flag is set
+may sign in.**
 
 A user who is already logged into 321Theater or Leash is automatically signed in
 to FetchLog (and vice-versa) — there is no second password prompt — because all
@@ -753,8 +754,9 @@ three apps share one session store.
   321Theater. FetchLog treats it as **read-only** — it never creates or modifies
   users and never changes passwords. Passwords are verified with Werkzeug
   (scrypt), matching how the siblings store them.
-- The role is re-read from the database on every request, so a demotion or
-  deletion in 321Theater takes effect on FetchLog immediately.
+- The `is_app_user` flag is re-read from the database on every request, so
+  turning it off (or deleting the user) in 321Theater locks the user out of
+  FetchLog immediately.
 - FetchLog creates the `app_sessions` table (and its indexes) on first start if
   it does not already exist — the same idempotent migration the siblings run.
 
@@ -763,10 +765,14 @@ three apps share one session store.
 > domain. For different sub-domains, set `cookie_domain` (e.g. `.example.com`) to
 > the same value in every app.
 
-> **"Tagged with Admin"** maps to the `role` text column having the value
-> `admin`. There is no separate `is_admin` flag or tags table. The siblings also
-> admit `staff`; FetchLog is intentionally stricter (admins only), controlled by
-> `allowed_roles`.
+> **Access flags.** 321Theater exposes two independent per-user flags in the
+> shared directory: **`is_app_user`** ("user of the shared apps") and
+> **`is_app_admin`** ("admin of the shared apps"). They are `0/1` columns set by
+> an admin in 321Theater, which applies no behavior of its own — each consuming
+> app decides what they mean. FetchLog gates **login on `is_app_user`** (default;
+> any account with the user flag set may sign in) and carries `is_app_admin` in
+> the session for future admin-only features. Switch the gating flag with
+> `require_flag`.
 
 ### Auth Configuration
 
@@ -789,7 +795,7 @@ inherits the top-level PostgreSQL setting of the same name.
         "user": "fetchlog",
         "password": "your_password",
         "shared_schema": "shared",
-        "allowed_roles": ["admin"],
+        "require_flag": "is_app_user",
         "cookie_name": "session",
         "cookie_domain": null,
         "cookie_secure": false,
@@ -804,7 +810,7 @@ inherits the top-level PostgreSQL setting of the same name.
 | `enabled` | `false` | Master switch. `false` disables the login gate (development only — the UI/API are then open). |
 | `host` / `port` / `dbname` / `user` / `password` | *(inherits top-level)* | PostgreSQL connection to the database holding the `shared` schema. |
 | `shared_schema` | `shared` | Schema containing the shared `users` and `app_sessions` tables. |
-| `allowed_roles` | `["admin"]` | Roles permitted to sign in to FetchLog. |
+| `require_flag` | `is_app_user` | Which shared-user flag an account must have set (`1`) to sign in: `is_app_user` or `is_app_admin`. |
 | `cookie_name` | `session` | Session cookie name. **Must match the sibling apps** (they use Flask's default `session`). |
 | `cookie_domain` | `null` | Set to a shared parent domain (e.g. `.example.com`) for cross-subdomain SSO; leave `null` for same-host. **Must match the siblings.** |
 | `cookie_secure` | `false` | Set `true` to mark the cookie HTTPS-only. Recommended whenever you serve over HTTPS. |
@@ -816,7 +822,7 @@ The shared tables (managed by 321Theater) look like this:
 ```sql
 -- read-only for FetchLog; owned by 321Theater
 shared.users(id, username, password_hash, role, display_name,
-             must_change_password, ...);
+             is_app_user, is_app_admin, must_change_password, ...);
 -- the server-side session store
 shared.app_sessions(sid PRIMARY KEY, user_id REFERENCES shared.users(id),
                     data, created_at, last_seen, expires_at);

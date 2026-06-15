@@ -15,9 +15,14 @@ mechanism is deliberately framework-agnostic:
     by 321Theater. FetchLog treats it as **read-only** and verifies passwords
     with Werkzeug (scrypt). It never creates or modifies users.
 
-  * A user is "tagged with Admin" via the ``role`` text column (``role = 'admin'``).
-    FetchLog only lets ``role`` values in ``allowed_roles`` (default: just
-    ``admin``) sign in — stricter than the siblings, which also allow ``staff``.
+  * Which accounts may sign in is controlled by per-user flags in the shared
+    directory, set by an admin in 321Theater: ``is_app_user`` ("user of the
+    shared apps") and ``is_app_admin`` ("administrator of the shared apps").
+    They are independent ``0/1`` columns; 321Theater applies no behavior of its
+    own, so the consuming app owns their meaning. FetchLog gates login on
+    ``is_app_user`` by default (any account with the user flag set may sign in)
+    and carries ``is_app_admin`` in the session for future admin-only features.
+    The gating flag is selectable via the ``require_flag`` config option.
 
 ``psycopg2`` and ``werkzeug`` are imported lazily inside the methods that need
 them, so importing this module is cheap and safe even when auth is disabled and
@@ -52,7 +57,8 @@ _DUMMY_HASH = (
 DEFAULT_COOKIE_NAME = "session"
 DEFAULT_SHARED_SCHEMA = "shared"
 DEFAULT_LIFETIME_HOURS = 12
-DEFAULT_ALLOWED_ROLES = ("admin",)
+DEFAULT_REQUIRE_FLAG = "is_app_user"
+_VALID_FLAGS = ("is_app_user", "is_app_admin")
 
 
 def _validate_identifier(name: str, what: str = "schema") -> str:
@@ -86,8 +92,11 @@ class AuthManager:
         self.cookie_samesite = (config.get("cookie_samesite") or "lax").lower()
         self.lifetime_hours = int(config.get("session_lifetime_hours") or DEFAULT_LIFETIME_HOURS)
 
-        roles = config.get("allowed_roles") or DEFAULT_ALLOWED_ROLES
-        self.allowed_roles = frozenset(str(r).strip().lower() for r in roles if str(r).strip())
+        self.require_flag = config.get("require_flag") or DEFAULT_REQUIRE_FLAG
+        if self.require_flag not in _VALID_FLAGS:
+            raise ValueError(
+                f"auth: require_flag must be one of {list(_VALID_FLAGS)}, "
+                f"got {self.require_flag!r}")
 
         self._local = threading.local()
 
@@ -206,7 +215,8 @@ class AuthManager:
         s = self.shared_schema
         return self._fetchone(
             f'SELECT id, username, password_hash, role, display_name, '
-            f'       must_change_password, is_readonly, theme '
+            f'       must_change_password, is_readonly, theme, '
+            f'       is_app_user, is_app_admin '
             f'FROM "{s}".users WHERE username = %s LIMIT 1',
             (username,),
         )
@@ -214,7 +224,8 @@ class AuthManager:
     def get_user_by_id(self, user_id) -> Optional[dict]:
         s = self.shared_schema
         return self._fetchone(
-            f'SELECT id, username, role, display_name, is_readonly '
+            f'SELECT id, username, role, display_name, is_readonly, '
+            f'       is_app_user, is_app_admin '
             f'FROM "{s}".users WHERE id = %s LIMIT 1',
             (user_id,),
         )
@@ -255,13 +266,13 @@ class AuthManager:
             logger.warning("auth: bad password for user %r", username)
             return {"ok": False, "error": "Invalid username or password."}
 
-        role = str(user.get("role", "")).strip().lower()
-        if role not in self.allowed_roles:
-            logger.warning("auth: login denied for %r (role=%r) — not permitted on FetchLog",
-                           username, role)
+        if not bool(user.get(self.require_flag)):
+            logger.warning("auth: login denied for %r (%s not set) - no FetchLog access",
+                           username, self.require_flag)
             return {"ok": False, "error": "Your account does not have access to FetchLog."}
 
-        logger.info("auth: user %r (role=%r) logged in", username, role)
+        logger.info("auth: user %r logged in (is_app_user=%s, is_app_admin=%s)",
+                    username, bool(user.get("is_app_user")), bool(user.get("is_app_admin")))
         return {"ok": True, "user": user}
 
     def _session_payload(self, user: dict) -> dict:
@@ -281,6 +292,8 @@ class AuthManager:
             "user_role": user.get("role"),   # consumed by 321Theater
             "theme": user.get("theme") or "dark",
             "is_readonly": bool(user.get("is_readonly", 0)),
+            "is_app_user": bool(user.get("is_app_user", 0)),
+            "is_app_admin": bool(user.get("is_app_admin", 0)),
             "login_time": now.isoformat(),
             "_role_checked_at": now.timestamp(),
         }
@@ -339,12 +352,11 @@ class AuthManager:
             logger.warning("auth: failed to delete session", exc_info=True)
 
     def authenticate_request(self, cookie_value: Optional[str]) -> Optional[dict]:
-        """Resolve a request cookie to an authorised admin user, or None.
+        """Resolve a request cookie to an authorised user, or None.
 
-        The role is re-read from ``shared.users`` on every request so the session
-        data is never trusted for authorization — demotions/deletions take effect
-        immediately, and the ``role`` vs ``user_role`` key difference between the
-        sibling apps becomes irrelevant.
+        The access flag is re-read from ``shared.users`` on every request so the
+        session data is never trusted for authorization — a flag turned off in
+        321Theater takes effect on the next request.
         """
         if not self.enabled:
             return None
@@ -363,7 +375,7 @@ class AuthManager:
             return None
         if user is None:
             return None
-        if str(user.get("role", "")).strip().lower() not in self.allowed_roles:
+        if not bool(user.get(self.require_flag)):
             return None
         return user
 
