@@ -180,6 +180,18 @@ sudo systemctl daemon-reload && sudo systemctl restart fetchlog
 | `fetchlog` system user | Unprivileged account the service runs under |
 | `<project-dir>/.venv` | Python virtual environment with all dependencies |
 
+### Privileged ports (e.g. standard syslog 514)
+
+The service runs as the unprivileged `fetchlog` user, which normally cannot bind
+ports below 1024. If you set the UDP or web port to a privileged port (e.g.
+`FETCHLOG_UDP_PORT=514` for standard syslog), `install.sh` automatically adds
+`AmbientCapabilities=CAP_NET_BIND_SERVICE` to the unit so the service can bind it
+without running as root. The unit also sets `HOME` to the data directory (the
+`fetchlog` user has no home dir), which keeps gunicorn's control server happy.
+
+If you switch to a privileged port by editing the unit by hand, add that line
+yourself (and `sudo systemctl daemon-reload && sudo systemctl restart fetchlog`).
+
 ### PEP 668 / Externally Managed Python
 
 The installer uses a virtual environment, so system pip restrictions (PEP 668) on newer

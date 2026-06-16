@@ -162,6 +162,15 @@ cmd_install() {
         parent="$(dirname "${parent}")"
     done
 
+    # Binding a privileged port (<1024, e.g. the standard syslog port 514) as a
+    # non-root user requires CAP_NET_BIND_SERVICE -- grant it only when needed.
+    local privcaps=""
+    if [[ "${UDP_PORT}" -lt 1024 || "${WEB_PORT}" -lt 1024 ]]; then
+        privcaps="AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE"
+        info "Privileged port (<1024) configured -- granting CAP_NET_BIND_SERVICE."
+    fi
+
     # Write the systemd unit file
     info "Writing ${SERVICE_FILE}..."
     cat > "${SERVICE_FILE}" <<EOF
@@ -188,6 +197,9 @@ WorkingDirectory=${INSTALL_DIR}
 Environment=FETCHLOG_HOST=${HOST}
 Environment=FETCHLOG_UDP_PORT=${UDP_PORT}
 Environment=FETCHLOG_DB_CONFIG=${INSTALL_DIR}/db_config.json
+# The fetchlog user has no home directory; give tools that write under \$HOME
+# (e.g. gunicorn's control server) a writable location instead of /home/fetchlog.
+Environment=HOME=${DATA_DIR}
 ExecStart=${VENV_DIR}/bin/gunicorn web_server:app \\
     --worker-class uvicorn.workers.UvicornWorker \\
     --workers 1 \\
@@ -205,6 +217,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths=${DATA_DIR} ${INSTALL_DIR}
 PrivateTmp=true
+${privcaps}
 
 [Install]
 WantedBy=multi-user.target
