@@ -115,7 +115,7 @@ cmd_install() {
         || die "Virtual environment not found at ${VENV_DIR}. Run 'sudo $0 setup' first."
 
     info "Verifying installed packages in ${VENV_DIR}..."
-    "${VENV_DIR}/bin/python3" -c "import fastapi, uvicorn, websockets, jinja2, aiofiles, dateutil" \
+    "${VENV_DIR}/bin/python3" -c "import fastapi, uvicorn, websockets, jinja2, aiofiles, dateutil, gunicorn, werkzeug, multipart" \
         2>/dev/null \
         || die "Required packages are missing. Run 'sudo $0 setup' first."
     success "All packages present."
@@ -180,10 +180,19 @@ Group=${SERVICE_USER}
 # for static files and Jinja2 templates ("static/" and "templates/")
 WorkingDirectory=${INSTALL_DIR}
 
-ExecStart=${VENV_DIR}/bin/python3 ${APP_ENTRY} \\
-    --udp-port ${UDP_PORT} \\
-    --web-port ${WEB_PORT} \\
-    --host ${HOST}
+# FetchLog runs as a SINGLE process on purpose: one process binds the UDP
+# syslog socket and fans out the live WebSocket feed from in-memory state.
+# Gunicorn must therefore run exactly one worker (--workers 1). The UDP port
+# and bind host are passed via the environment because the web app's startup
+# lifespan (not a CLI flag) starts the UDP listener under gunicorn.
+Environment=FETCHLOG_HOST=${HOST}
+Environment=FETCHLOG_UDP_PORT=${UDP_PORT}
+Environment=FETCHLOG_DB_CONFIG=${INSTALL_DIR}/db_config.json
+ExecStart=${VENV_DIR}/bin/gunicorn web_server:app \\
+    --worker-class uvicorn.workers.UvicornWorker \\
+    --workers 1 \\
+    --bind ${HOST}:${WEB_PORT} \\
+    --timeout 120
 
 Restart=on-failure
 RestartSec=5
@@ -219,6 +228,8 @@ EOF
     info "  Database        : ${INSTALL_DIR}/logs.db (default, see db_config.json)"
     info "  Running as user : ${SERVICE_USER}"
     info "  Virtual env     : ${VENV_DIR}"
+    info "  Web server      : gunicorn (1 worker) + uvicorn worker class"
+    info "  Auth            : configured in db_config.json ('auth' block; admins only)"
     echo ""
     info "To change these, edit ${SERVICE_FILE} then run: sudo systemctl daemon-reload"
     echo ""

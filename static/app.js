@@ -162,6 +162,7 @@ const App = {
 
         try {
             const resp = await fetch(`/api/logs?${params}`);
+            if (resp.status === 401) { window.location.href = '/login'; return; }
             const data = await resp.json();
             this.totalEntries = data.total;
 
@@ -186,6 +187,7 @@ const App = {
     async loadHosts() {
         try {
             const resp = await fetch('/api/hosts');
+            if (resp.status === 401) { window.location.href = '/login'; return; }
             const data = await resp.json();
             this.knownHosts = data.hosts;
             this.knownIPs = new Set(data.hosts.map(h => h.ip));
@@ -203,6 +205,7 @@ const App = {
     async catchUp() {
         try {
             const resp = await fetch(`/api/logs?sort_by=id&sort_order=ASC&limit=500`);
+            if (resp.status === 401) { window.location.href = '/login'; return; }
             const data = await resp.json();
             const newEntries = data.entries.filter(e => e.id > this.lastSeenId);
             if (newEntries.length === 0) return;
@@ -426,11 +429,12 @@ const App = {
         const style = document.getElementById('marker-style').value;
         const timestamp = timeVal ? new Date(timeVal).toISOString() : null;
         try {
-            await fetch('/api/markers', {
+            const resp = await fetch('/api/markers', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ label, timestamp, style }),
             });
+            if (resp.status === 401) { window.location.href = '/login'; return; }
             this.hideMarkerModal();
             document.getElementById('marker-label').value = '';
         } catch (e) {

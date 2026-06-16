@@ -45,6 +45,9 @@ _IMPORT_MAP = {
     "jinja2": "jinja2",
     "fastapi": "fastapi",
     "websockets": "websockets",
+    "python-multipart": "multipart",
+    "werkzeug": "werkzeug",
+    "gunicorn": "gunicorn",
 }
 
 
@@ -74,15 +77,25 @@ def load_db_config(config_path: str) -> dict:
     return {"db_type": "sqlite", "sqlite_path": "logs.db"}
 
 
-def ensure_dependencies(db_type: str = "sqlite"):
+def ensure_dependencies(db_type: str = "sqlite", auth_enabled: bool = False):
     """Check that all required packages are importable; pip-install missing ones."""
     req_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "requirements.txt")
     requirements = _parse_requirements(req_path)
 
+    def _skip(import_name: str) -> bool:
+        # gunicorn is a production process manager: it imports the app, the app
+        # never imports it, so don't require it to be importable in dev.
+        if import_name == "gunicorn":
+            return True
+        # psycopg2 is needed for PostgreSQL log storage OR for auth (the shared
+        # session store is always PostgreSQL).
+        if import_name == "psycopg2" and db_type != "postgresql" and not auth_enabled:
+            return True
+        return False
+
     missing = []
     for pip_spec, import_name in requirements:
-        # Skip psycopg2 when using sqlite - no need to install it
-        if import_name == "psycopg2" and db_type != "postgresql":
+        if _skip(import_name):
             continue
         try:
             importlib.import_module(import_name)
@@ -109,7 +122,7 @@ def ensure_dependencies(db_type: str = "sqlite"):
         # earlier by the venv owner.
         still_missing = []
         for pip_spec, import_name in requirements:
-            if import_name == "psycopg2" and db_type != "postgresql":
+            if _skip(import_name):
                 continue
             try:
                 importlib.import_module(import_name)
@@ -131,15 +144,12 @@ def ensure_dependencies(db_type: str = "sqlite"):
 
 def _load_app_modules():
     """Import application modules after dependencies are verified."""
-    global uvicorn, start_syslog_server, fastapi_app, set_database, broadcast_log
+    global uvicorn, fastapi_app
     import uvicorn as _uvicorn
     uvicorn = _uvicorn
-    from syslog_server import start_syslog_server as _syslog
-    start_syslog_server = _syslog
-    from web_server import app as _app, set_database as _set_db, broadcast_log as _broadcast
+    # web_server's lifespan owns DB init, auth, and the UDP syslog server.
+    from web_server import app as _app
     fastapi_app = _app
-    set_database = _set_db
-    broadcast_log = _broadcast
 
 
 def parse_args():
@@ -169,62 +179,31 @@ def parse_args():
     return parser.parse_args()
 
 
-class LogRouter:
-    """Routes incoming UDP messages to database and WebSocket clients."""
-
-    def __init__(self, db, loop: asyncio.AbstractEventLoop):
-        self.db = db
-        self.loop = loop
-        self._count = 0
-
-    def on_message(self, entry: dict):
-        """Called by the UDP server for each received message."""
-        try:
-            row_id = self.db.insert_log(entry)
-            self._count += 1
-
-            if self._count % 1000 == 0:
-                logger.info("Processed %d messages total", self._count)
-
-            # Fetch the full row from DB so the WebSocket message has
-            # the same shape as /api/logs responses (all columns present)
-            rows = self.db.get_entries_after(row_id - 1, limit=1)
-            if rows:
-                self.loop.create_task(broadcast_log(rows[0]))
-
-        except Exception:
-            logger.exception("Error routing message")
-
-
 async def run_app(args, db_config: dict):
-    """Main async entry point - starts UDP server and web server together."""
-    # Initialize database
+    """Dev/simple entry point: run uvicorn against the FastAPI app.
+
+    The web app's lifespan (web_server.py) initializes the database + auth and
+    starts the UDP syslog server. Runtime settings are passed via the environment
+    so the very same app object also runs under gunicorn:
+
+        gunicorn web_server:app -k uvicorn.workers.UvicornWorker -w 1 -b HOST:PORT
+    """
     db_type = db_config.get("db_type", "sqlite")
     if db_type == "postgresql":
-        from database_pg import LogDatabase
-        db = LogDatabase(db_config)
-        db_label = f"PostgreSQL ({db_config.get('host', 'localhost')}:{db_config.get('port', 5432)}/{db_config.get('dbname', 'fetchlog')})"
+        db_label = (f"PostgreSQL ({db_config.get('host', 'localhost')}:"
+                    f"{db_config.get('port', 5432)}/{db_config.get('dbname', 'fetchlog')})")
     else:
-        from database import LogDatabase
-        sqlite_path = db_config.get("sqlite_path", "logs.db")
-        db = LogDatabase(sqlite_path)
-        db_label = sqlite_path
-    set_database(db)
-    logger.info("Database initialized: %s", db_label)
+        db_label = db_config.get("sqlite_path", "logs.db")
 
-    loop = asyncio.get_running_loop()
-    router = LogRouter(db, loop)
+    # Hand runtime settings to the app's lifespan via the environment.
+    os.environ["FETCHLOG_HOST"] = args.host
+    os.environ["FETCHLOG_UDP_PORT"] = str(args.udp_port)
+    os.environ["FETCHLOG_DB_CONFIG"] = args.db_config
+    if args.db:
+        os.environ["FETCHLOG_SQLITE_PATH"] = args.db
 
-    # Start UDP syslog server
-    transport, protocol = await start_syslog_server(
-        on_message=router.on_message,
-        host=args.host,
-        port=args.udp_port,
-        loop=loop,
-    )
-    logger.info("UDP syslog server listening on %s:%d", args.host, args.udp_port)
+    auth_state = "enabled" if (db_config.get("auth") or {}).get("enabled") else "disabled"
 
-    # Start web server using uvicorn
     config = uvicorn.Config(
         fastapi_app,
         host=args.host,
@@ -236,6 +215,7 @@ async def run_app(args, db_config: dict):
     logger.info("Web UI available at http://%s:%d",
                 "localhost" if args.host == "0.0.0.0" else args.host,
                 args.web_port)
+    logger.info("Authentication: %s", auth_state)
 
     print(f"""
 ╔══════════════════════════════════════════════════════╗
@@ -253,11 +233,7 @@ async def run_app(args, db_config: dict):
 ╚══════════════════════════════════════════════════════╝
 """)
 
-    try:
-        await server.serve()
-    finally:
-        transport.close()
-        logger.info("Shutting down...")
+    await server.serve()
 
 
 def main():
@@ -267,7 +243,9 @@ def main():
     if args.db:
         db_config["sqlite_path"] = args.db
     # Check and auto-install missing dependencies before importing app modules
-    ensure_dependencies(db_type=db_config.get("db_type", "sqlite"))
+    auth_enabled = bool((db_config.get("auth") or {}).get("enabled"))
+    ensure_dependencies(db_type=db_config.get("db_type", "sqlite"),
+                        auth_enabled=auth_enabled)
     _load_app_modules()
     try:
         asyncio.run(run_app(args, db_config))

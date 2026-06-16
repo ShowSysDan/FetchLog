@@ -5,3 +5,8 @@ jinja2>=3.1.2
 aiofiles>=23.2.1
 python-dateutil>=2.8.2
 psycopg2-binary>=2.9.9
+# --- Authentication / shared-session SSO ---
+werkzeug>=3.0.0          # password hashing (scrypt) compatible with the sibling apps
+python-multipart>=0.0.6  # parse the login form POST in FastAPI
+# --- Production WSGI/ASGI process manager ---
+gunicorn>=22.0.0         # run with: gunicorn web_server:app -k uvicorn.workers.UvicornWorker -w 1
