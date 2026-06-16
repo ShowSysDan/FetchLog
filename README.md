@@ -878,6 +878,10 @@ cd /path/to/FetchLog
 git pull
 ```
 
+> If `./install.sh` reports `Permission denied`, the script just isn't marked
+> executable on your checkout — run `chmod +x install.sh` once (or invoke it as
+> `sudo bash install.sh`).
+
 1. **Install the new venv dependencies** (`werkzeug`, `python-multipart`,
    `gunicorn`). A `git pull` does not install them, and the service user usually
    can't write to the venv, so install them explicitly as the deploying user:
@@ -907,7 +911,7 @@ git pull
      rewrite the systemd unit with the new gunicorn `ExecStart`:
      ```bash
      sudo ./install.sh install        # rewrites the unit + daemon-reload
-     sudo ./install.sh start
+     sudo systemctl restart fetchlog  # restart so the new unit takes effect
      ```
    - **Keep your current unit:** the old `python app.py` systemd unit still works
      (it starts the same auth + UDP lifespan). Just restart:
