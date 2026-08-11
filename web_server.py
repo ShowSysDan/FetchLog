@@ -164,8 +164,7 @@ async def lifespan(app_: FastAPI):
     if ssh_port or telnet_port:
         term_handles = await terminal_server.start_servers(
             host=udp_host, ssh_port=ssh_port, telnet_port=telnet_port,
-            database=database, auth_manager=auth_mgr,
-            require_auth=bool(term_cfg.get("require_auth", True)),
+            database=database,
             ssh_host_key=term_cfg.get("ssh_host_key") or "ssh_host_key")
 
     try:

@@ -7,9 +7,9 @@ newest at the top, older lines rolling off the bottom, and a key-hint bar at
 the bottom of the screen.
 
 The SSH server is embedded in the app (asyncssh) — no system sshd involved.
-When FetchLog auth is enabled, SSH/telnet logins are validated against the
-same shared user store as the web UI, unless "terminal.require_auth" is set
-to false in db_config.json (then any client connects unauthenticated).
+SSH and telnet connections are ALWAYS unauthenticated — any client connects
+straight in with no credentials, even when the web portal's login is enabled.
+The view is read-only; bind to a trusted interface if that matters to you.
 
 Keys:
     q / Q       Disconnect
@@ -362,12 +362,6 @@ class TerminalSession:
 
 _sessions: "set[TerminalSession]" = set()
 _db = None
-_auth = None
-_require_auth = True
-
-
-def _auth_required() -> bool:
-    return bool(_require_auth and _auth is not None and _auth.enabled)
 
 
 async def broadcast_entry(entry: dict):
@@ -451,62 +445,6 @@ class _TelnetParser:
         return events
 
 
-async def _telnet_read_line(reader, writer, parser: _TelnetParser,
-                            dims: dict, echo: bool) -> Optional[str]:
-    """Read one line during the telnet login prompt (we run with server-side
-    echo, so echo printable chars back ourselves; never echo passwords)."""
-    line = []
-    while True:
-        data = await reader.read(256)
-        if not data:
-            return None
-        for kind, payload in parser.feed(data):
-            if kind == "naws":
-                dims["cols"], dims["rows"] = payload
-                continue
-            for b in payload:
-                ch = chr(b)
-                if ch in ("\r", "\n"):
-                    writer.write(b"\r\n")
-                    return "".join(line)
-                if ch == "\x03":          # Ctrl-C
-                    return None
-                if b in (0x08, 0x7F):     # backspace / delete
-                    if line:
-                        line.pop()
-                        if echo:
-                            writer.write(b"\b \b")
-                    continue
-                if b == 0x00 or b < 0x20:
-                    continue
-                line.append(ch)
-                if echo:
-                    writer.write(ch.encode("utf-8", "replace"))
-
-
-async def _telnet_login(reader, writer, parser: _TelnetParser,
-                        dims: dict) -> Optional[str]:
-    writer.write(b"\r\nFetchLog live view - authentication required.\r\n")
-    for _ in range(3):
-        writer.write(b"Username: ")
-        username = await _telnet_read_line(reader, writer, parser, dims, echo=True)
-        if username is None:
-            return None
-        writer.write(b"Password: ")
-        password = await _telnet_read_line(reader, writer, parser, dims, echo=False)
-        if password is None:
-            return None
-        try:
-            result = await asyncio.to_thread(_auth.login, username.strip(), password)
-        except Exception:
-            logger.exception("telnet auth error")
-            result = {"ok": False}
-        if result.get("ok"):
-            return username.strip()
-        writer.write(b"\r\nLogin incorrect.\r\n\r\n")
-    return None
-
-
 async def _handle_telnet(reader, writer):
     peer = writer.get_extra_info("peername")
     label = f"{peer[0]}:{peer[1]}" if peer else "?"
@@ -520,22 +458,15 @@ async def _handle_telnet(reader, writer):
                             IAC, WILL, OPT_ECHO,
                             IAC, DO, OPT_NAWS]))
 
-        username = None
-        if _auth_required():
-            username = await _telnet_login(reader, writer, parser, dims)
-            if username is None:
-                writer.write(b"Too many failures. Bye.\r\n")
-                return
-        else:
-            # Give the client a moment to answer DO NAWS so the first paint
-            # already uses the real window size.
-            try:
-                data = await asyncio.wait_for(reader.read(256), timeout=0.4)
-                for kind, payload in parser.feed(data or b""):
-                    if kind == "naws":
-                        dims["cols"], dims["rows"] = payload
-            except (asyncio.TimeoutError, ConnectionError):
-                pass
+        # Give the client a moment to answer DO NAWS so the first paint
+        # already uses the real window size.
+        try:
+            data = await asyncio.wait_for(reader.read(256), timeout=0.4)
+            for kind, payload in parser.feed(data or b""):
+                if kind == "naws":
+                    dims["cols"], dims["rows"] = payload
+        except (asyncio.TimeoutError, ConnectionError):
+            pass
 
         def write_str(s: str):
             transport = writer.transport
@@ -548,7 +479,7 @@ async def _handle_telnet(reader, writer):
         session = TerminalSession(
             write=write_str, database=_db, label=label,
             cols=dims["cols"], rows=dims["rows"],
-            transport_name="telnet", username=username)
+            transport_name="telnet")
         _sessions.add(session)
         await session.start()
 
@@ -584,19 +515,9 @@ async def _handle_telnet(reader, writer):
 def _make_ssh_server_class(asyncssh):
     class _FetchLogSSHServer(asyncssh.SSHServer):
         def begin_auth(self, username: str) -> bool:
-            # False = no authentication required (open access)
-            return _auth_required()
-
-        def password_auth_supported(self) -> bool:
-            return True
-
-        async def validate_password(self, username: str, password: str) -> bool:
-            try:
-                result = await asyncio.to_thread(_auth.login, username, password)
-                return bool(result.get("ok"))
-            except Exception:
-                logger.exception("SSH auth error")
-                return False
+            # False = no authentication required — the live view is always
+            # open, independent of the web portal's login.
+            return False
 
     return _FetchLogSSHServer
 
@@ -621,8 +542,7 @@ async def _handle_ssh_process(process):
 
     session = TerminalSession(
         write=process.stdout.write, database=_db, label=label,
-        cols=cols, rows=rows, transport_name="ssh",
-        username=username if _auth_required() else None)
+        cols=cols, rows=rows, transport_name="ssh")
     _sessions.add(session)
     try:
         await session.start()
@@ -671,23 +591,24 @@ def _ensure_host_key(asyncssh, path: str):
 # ---------------------------------------------------------------------------
 
 async def start_servers(*, host: str, ssh_port: int, telnet_port: int,
-                        database, auth_manager,
-                        require_auth: bool = True,
+                        database,
                         ssh_host_key: str = "ssh_host_key") -> list:
-    """Start the enabled terminal servers. Returns handles with .close()."""
-    global _db, _auth, _require_auth
+    """Start the enabled terminal servers. Returns handles with .close().
+
+    Both listeners are always unauthenticated (independent of web auth), so
+    each needs its own dedicated TCP port — SSH cannot share the web port
+    because the two protocols are incompatible on the same socket.
+    """
+    global _db
     _db = database
-    _auth = auth_manager
-    _require_auth = require_auth
 
     handles = []
-    auth_note = "auth required" if _auth_required() else "UNAUTHENTICATED"
 
     if telnet_port:
         server = await asyncio.start_server(_handle_telnet, host, telnet_port)
         handles.append(server)
-        logger.info("Telnet live view on %s:%d (%s) - telnet is unencrypted, "
-                    "use only on trusted networks", host, telnet_port, auth_note)
+        logger.info("Telnet live view on %s:%d (unauthenticated) - telnet is "
+                    "unencrypted, use only on trusted networks", host, telnet_port)
 
     if ssh_port:
         try:
@@ -706,7 +627,7 @@ async def start_servers(*, host: str, ssh_port: int, telnet_port: int,
                 line_editor=False,   # deliver keypresses immediately, unbuffered
             )
             handles.append(server)
-            logger.info("SSH live view on %s:%d (%s) - connect with: "
-                        "ssh -p %d <this-host>", host, ssh_port, auth_note, ssh_port)
+            logger.info("SSH live view on %s:%d (unauthenticated) - connect "
+                        "with: ssh -p %d <this-host>", host, ssh_port, ssh_port)
 
     return handles

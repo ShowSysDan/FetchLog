@@ -438,7 +438,7 @@ python app.py --ssh-port 2222 --telnet-port 2323
 #   "terminal": {"ssh_port": 2222, "telnet_port": 2323}
 
 # Then, from any client machine:
-ssh -p 2222 anyname@your-server        # any username works when auth is off
+ssh -p 2222 anyname@your-server        # any username, no password — ever
 telnet your-server 2323
 ```
 
@@ -452,14 +452,18 @@ Details:
   entries, then live entries stream in on top.
 - **Resize-aware** — the view redraws when you resize your terminal
   (SSH terminal resize and telnet NAWS are both supported).
-- **Authentication** — when FetchLog [auth](#authentication) is enabled,
-  SSH and telnet logins are checked against the same shared users as the
-  web UI. Set `"terminal": {"require_auth": false}` to allow terminal
-  clients to connect **unauthenticated** even while web auth stays on
-  (handy for a wall-mounted status display). When auth is disabled
-  entirely (the default dev config), no credentials are asked for.
-- **Telnet is unencrypted** — credentials and log content travel in
-  plaintext. Use it only on trusted networks, or stick with SSH.
+- **Always unauthenticated** — terminal connections never ask for
+  credentials, even when the web portal's [auth](#authentication) is
+  enabled. Any SSH client connects with any username and no password
+  (handy for wall-mounted status displays and quick checks from any
+  machine). The view is read-only; if open viewing is a concern, bind
+  FetchLog to a trusted interface or firewall the terminal ports.
+- **Dedicated ports required** — the SSH/telnet listeners cannot share
+  the web UI's port: SSH, telnet, and HTTP are incompatible protocols,
+  and only one server can own a TCP port. Pick any free ports
+  (2222/2323 are the conventional choices).
+- **Telnet is unencrypted** — log content travels in plaintext. Use it
+  only on trusted networks, or stick with SSH.
 - Like the web UI's WebSocket fan-out, the embedded servers live in the
   single app process — no extra services to run.
 
@@ -839,6 +843,9 @@ three apps share one session store.
 > login. The **UDP syslog server keeps receiving, parsing, and storing logs from
 > devices regardless of whether anyone is logged in** — even if the shared auth
 > database is unreachable. Login controls *viewing*, never *ingestion*.
+> The optional [SSH/telnet terminal live view](#terminal-live-view) is also
+> **not** behind the login — terminal clients always connect unauthenticated,
+> so only enable those ports on networks where open viewing is acceptable.
 
 ### How shared sign-on works
 
@@ -1039,6 +1046,12 @@ No. FetchLog automatically detects and installs missing dependencies on startup.
 
 **Q: Why port 5514 instead of 514?**
 Port 514 is the standard syslog port but requires root/sudo privileges. Port 5514 works without elevated permissions. Use `--udp-port 514` with `sudo` if you need the standard port.
+
+**Q: Can the SSH/telnet live view share the web UI's port?**
+No. SSH, telnet, and HTTP are incompatible protocols and only one server can listen on a given TCP port — an SSH server must send its `SSH-2.0` banner the moment a client connects, while an HTTP server waits silently for a request, so they can't coexist on one socket. Give each listener its own port (`--ssh-port 2222 --telnet-port 2323` are the conventional picks). The UDP syslog port is separate anyway (UDP vs TCP), and `tui.py` is the one terminal viewer that *does* use the web port, since it speaks HTTP/WebSocket.
+
+**Q: Does the SSH live view need sshd, or a login?**
+Neither. The SSH server is embedded in the FetchLog process itself (via `asyncssh`) with its own auto-generated host key — the system's sshd is not involved and no OS accounts are used. Terminal connections are always unauthenticated, even when the web portal's login is enabled; see [Terminal Live View](#terminal-live-view).
 
 **Q: What happens with non-syslog messages?**
 They're stored as-is with `is_syslog=0`. In the web UI they appear in neutral gray with a "raw" label. No fake severity is assigned — the severity filter won't match them unless you leave it on "All".
