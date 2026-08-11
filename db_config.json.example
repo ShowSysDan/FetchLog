@@ -26,6 +26,24 @@
     "password": "your_password_here",
     "schema": "fetchlog",
 
+    "_terminal_comment_1": "------------------------------------------------------------",
+    "_terminal_comment_2": "Terminal live view - connect with any SSH or telnet client for an",
+    "_terminal_comment_3": "  htop-style full-color live log stream (newest entries on top).",
+    "_terminal_comment_4": "ssh_port / telnet_port: 0 (or omit) disables that listener.",
+    "_terminal_comment_5": "The SSH server is embedded in FetchLog (no system sshd needed); its",
+    "_terminal_comment_6": "  host key is generated on first start at ssh_host_key.",
+    "_terminal_comment_7": "require_auth: when auth (below) is enabled, terminal logins use the",
+    "_terminal_comment_8": "  same shared usernames/passwords. Set require_auth=false to let",
+    "_terminal_comment_9": "  terminal clients connect UNAUTHENTICATED even with web auth on.",
+    "_terminal_comment_10": "Telnet is unencrypted - use it only on trusted networks.",
+    "_terminal_comment_11": "------------------------------------------------------------",
+    "terminal": {
+        "ssh_port": 0,
+        "telnet_port": 0,
+        "require_auth": true,
+        "ssh_host_key": "ssh_host_key"
+    },
+
     "_auth_comment_1": "------------------------------------------------------------",
     "_auth_comment_2": "Authentication - shared single-sign-on with Leash / 321Theater",
     "_auth_comment_3": "------------------------------------------------------------",

@@ -25,6 +25,9 @@ Built to handle **300+ devices** simultaneously with no performance issues.
   - [Markers](#markers)
   - [CSV Export](#csv-export)
   - [Host Management](#host-management)
+- [Terminal Live View](#terminal-live-view)
+  - [The bundled TUI client (tui.py)](#the-bundled-tui-client-tuipy)
+  - [SSH and telnet live view (embedded servers)](#ssh-and-telnet-live-view-embedded-servers)
 - [Architecture](#architecture)
 - [Syslog Format Support](#syslog-format-support)
   - [Severity Levels](#severity-levels)
@@ -55,6 +58,7 @@ Built to handle **300+ devices** simultaneously with no performance issues.
 - **Auto Dependency Install** — Missing Python packages are detected and installed automatically on startup
 - **Auto Host Tracking** — Automatically detects and tracks all devices that send messages, with renameable display names
 - **Severity Color Coding** — Syslog messages are color-coded by severity (red for errors, yellow for warnings, etc.). Non-syslog messages display in neutral gray
+- **Terminal Live View** — htop-style full-color live stream in any terminal: a bundled TUI client, plus embedded SSH and telnet servers (newest entries on top, rolling off the bottom)
 
 ---
 
@@ -202,6 +206,8 @@ python app.py [OPTIONS]
 | `--web-port` | `8080` | HTTP port for the web UI |
 | `--host` | `0.0.0.0` | Bind address (all interfaces by default) |
 | `--db-config` | `db_config.json` | Path to the database configuration file (see [Database Configuration File](#database-configuration-file)) |
+| `--ssh-port` | off | TCP port for the embedded SSH live view (see [Terminal Live View](#terminal-live-view)); `0` disables |
+| `--telnet-port` | off | TCP port for the telnet live view; `0` disables |
 
 The database backend (SQLite vs PostgreSQL), file path, credentials, and schema are all controlled by the config file — not CLI flags. This means your startup command stays the same regardless of which database you use.
 
@@ -219,13 +225,16 @@ python app.py --udp-port 1514 --web-port 9090 --db-config /etc/fetchlog/db_confi
 
 # Bind to specific interface
 python app.py --host 192.168.1.100
+
+# Also serve the terminal live view over SSH and telnet
+python app.py --ssh-port 2222 --telnet-port 2323
 ```
 
 On startup you'll see:
 
 ```
 ╔══════════════════════════════════════════════════════╗
-║                   FetchLog v1.0                      ║
+║                   FetchLog v1.1                      ║
 ╠══════════════════════════════════════════════════════╣
 ║  UDP Syslog:  0.0.0.0:5514                           ║
 ║  Web UI:      http://localhost:8080                   ║
@@ -375,6 +384,87 @@ curl -X POST http://localhost:8080/api/hosts/192.168.1.50/name \
 
 ---
 
+## Terminal Live View
+
+Prefer a terminal to a browser? FetchLog has three htop-style, full-color
+terminal views of the live log stream. All of them share the same layout:
+a stats/status bar, a highlighted column header, color-coded log entries with
+the **newest at the top** (older lines roll off the bottom), and a key-hint
+bar at the bottom of the screen. Colors match the web UI: red for
+errors/critical, yellow for warnings, green for notices, cyan for info, dim
+for debug, magenta for markers.
+
+| Viewer | Runs where | Encryption | Best for |
+|---|---|---|---|
+| `tui.py` | On any machine with Python, connects to the server's web port | No (HTTP/WS) | Quick local viewing |
+| SSH view | Embedded in the FetchLog server | Yes | Remote viewing from any SSH client |
+| Telnet view | Embedded in the FetchLog server | **No** | Trusted LANs, ancient clients |
+
+### Keys (all viewers)
+
+| Key | Action |
+|---|---|
+| `Q` | Quit / disconnect |
+| `SPACE` | Pause / resume (new entries buffer while paused) |
+| `C` | Clear the screen buffer (SSH/telnet only) |
+
+### The bundled TUI client (`tui.py`)
+
+A standalone curses client that connects to a running FetchLog server over
+its web port (REST for history + WebSocket for live entries):
+
+```bash
+# View logs from a local server
+python tui.py
+
+# Connect to a remote FetchLog server, preload the last 100 entries
+python tui.py --host 192.168.1.10 --port 8080 --tail 100
+```
+
+It auto-reconnects with backoff if the server goes away, and needs only the
+`websockets` package (already in `requirements.txt`).
+
+### SSH and telnet live view (embedded servers)
+
+FetchLog can also *be* the server: it embeds its own SSH server (via
+`asyncssh` — no system `sshd` involved) and a telnet listener, so any
+terminal on the network can connect directly:
+
+```bash
+# Enable at launch
+python app.py --ssh-port 2222 --telnet-port 2323
+
+# ...or persistently in db_config.json
+#   "terminal": {"ssh_port": 2222, "telnet_port": 2323}
+
+# Then, from any client machine:
+ssh -p 2222 anyname@your-server        # any username works when auth is off
+telnet your-server 2323
+```
+
+Both listeners are **off by default**. On first start with SSH enabled, a
+host key is generated at `ssh_host_key` (configurable via
+`terminal.ssh_host_key`) and reused thereafter.
+
+Details:
+
+- **History backfill** — on connect you immediately see the most recent
+  entries, then live entries stream in on top.
+- **Resize-aware** — the view redraws when you resize your terminal
+  (SSH terminal resize and telnet NAWS are both supported).
+- **Authentication** — when FetchLog [auth](#authentication) is enabled,
+  SSH and telnet logins are checked against the same shared users as the
+  web UI. Set `"terminal": {"require_auth": false}` to allow terminal
+  clients to connect **unauthenticated** even while web auth stays on
+  (handy for a wall-mounted status display). When auth is disabled
+  entirely (the default dev config), no credentials are asked for.
+- **Telnet is unencrypted** — credentials and log content travel in
+  plaintext. Use it only on trusted networks, or stick with SSH.
+- Like the web UI's WebSocket fan-out, the embedded servers live in the
+  single app process — no extra services to run.
+
+---
+
 ## Architecture
 
 ```
@@ -398,10 +488,11 @@ curl -X POST http://localhost:8080/api/hosts/192.168.1.50/name \
 ┌──────────────────────────────────────────────────────────────┐
 │                      Log Router                              │
 │                                                              │
-│  ┌──────────────────┐     ┌─────────────────────────────┐    │
-│  │  SQLite or        │     │  WebSocket Broadcast         │    │
-│  │  PostgreSQL DB    │     │  (to all connected browsers) │    │
-│  └──────────────────┘     └─────────────────────────────┘    │
+│  ┌──────────────┐  ┌────────────────────┐  ┌─────────────┐   │
+│  │  SQLite or    │  │ WebSocket Broadcast │  │ SSH/Telnet  │   │
+│  │  PostgreSQL   │  │ (connected browsers)│  │ live view   │   │
+│  │  DB           │  │                    │  │ sessions    │   │
+│  └──────────────┘  └────────────────────┘  └─────────────┘   │
 └──────────────────────────────────────────────────────────────┘
                        │
                        ▼
@@ -416,6 +507,9 @@ curl -X POST http://localhost:8080/api/hosts/192.168.1.50/name \
 │  /api/export → CSV download                                  │
 │  /api/stats  → Server statistics                             │
 └──────────────────────────────────────────────────────────────┘
+
+Terminal clients (in addition to the browser):
+  tui.py ──HTTP/WS──▶ web port      any ssh/telnet client ──▶ terminal ports
 ```
 
 **File structure:**
@@ -429,6 +523,8 @@ FetchLog/
 ├── database_pg.py          # PostgreSQL database layer
 ├── db_config.json.example  # Example database config (copy to db_config.json)
 ├── web_server.py           # FastAPI REST API + WebSocket
+├── terminal_server.py      # Embedded SSH + telnet live view servers
+├── tui.py                  # Standalone curses TUI client (connects to web port)
 ├── install.sh              # Systemd service installer
 ├── templates/
 │   └── index.html          # Web UI template
