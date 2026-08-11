@@ -39,6 +39,26 @@ HOST="${FETCHLOG_HOST:-0.0.0.0}"
 SERVICE_USER="${FETCHLOG_USER:-fetchlog}"
 VENV_DIR="${FETCHLOG_VENV:-${INSTALL_DIR}/.venv}"
 
+# Re-running 'install' over an existing unit keeps its ports/host rather than
+# silently resetting them to the defaults above. An explicit FETCHLOG_*
+# environment variable still wins over the preserved value.
+if [[ -f "${SERVICE_FILE}" ]]; then
+    _kept=""
+    if [[ -z "${FETCHLOG_UDP_PORT:-}" ]]; then
+        _v="$(grep -oP '^Environment=FETCHLOG_UDP_PORT=\K[0-9]+' "${SERVICE_FILE}" 2>/dev/null || true)"
+        [[ -n "${_v}" && "${_v}" != "${UDP_PORT}" ]] && { UDP_PORT="${_v}"; _kept+=" udp=${_v}"; }
+    fi
+    if [[ -z "${FETCHLOG_HOST:-}" ]]; then
+        _v="$(grep -oP '^Environment=FETCHLOG_HOST=\K\S+' "${SERVICE_FILE}" 2>/dev/null || true)"
+        [[ -n "${_v}" && "${_v}" != "${HOST}" ]] && { HOST="${_v}"; _kept+=" host=${_v}"; }
+    fi
+    if [[ -z "${FETCHLOG_WEB_PORT:-}" ]]; then
+        _v="$(grep -oP -- '--bind [^: ]+:\K[0-9]+' "${SERVICE_FILE}" 2>/dev/null || true)"
+        [[ -n "${_v}" && "${_v}" != "${WEB_PORT}" ]] && { WEB_PORT="${_v}"; _kept+=" web=${_v}"; }
+    fi
+    [[ -n "${_kept}" ]] && echo "[INFO]  Preserving settings from existing service file:${_kept}"
+fi
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -162,6 +182,14 @@ cmd_install() {
         parent="$(dirname "${parent}")"
     done
 
+    # Ports below 1024 are privileged; grant the unprivileged service user
+    # the bind capability instead of running as root.
+    local cap_line=""
+    if (( UDP_PORT < 1024 )) || (( WEB_PORT < 1024 )); then
+        cap_line="AmbientCapabilities=CAP_NET_BIND_SERVICE"
+        info "Privileged port configured - adding CAP_NET_BIND_SERVICE to the unit."
+    fi
+
     # Write the systemd unit file
     info "Writing ${SERVICE_FILE}..."
     cat > "${SERVICE_FILE}" <<EOF
@@ -175,6 +203,7 @@ Wants=network.target
 Type=simple
 User=${SERVICE_USER}
 Group=${SERVICE_USER}
+${cap_line}
 
 # WorkingDirectory is required: web_server.py uses relative paths
 # for static files and Jinja2 templates ("static/" and "templates/")
@@ -188,6 +217,9 @@ WorkingDirectory=${INSTALL_DIR}
 Environment=FETCHLOG_HOST=${HOST}
 Environment=FETCHLOG_UDP_PORT=${UDP_PORT}
 Environment=FETCHLOG_DB_CONFIG=${INSTALL_DIR}/db_config.json
+# The service user has no real home; point HOME at the writable data dir so
+# gunicorn can create its control socket (\$HOME/.gunicorn) without errors.
+Environment=HOME=${DATA_DIR}
 ExecStart=${VENV_DIR}/bin/gunicorn web_server:app \\
     --worker-class uvicorn.workers.UvicornWorker \\
     --workers 1 \\

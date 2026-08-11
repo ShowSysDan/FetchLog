@@ -413,6 +413,7 @@ for debug, magenta for markers.
 | `Q` | Quit / disconnect |
 | `SPACE` | Pause / resume (new entries buffer while paused) |
 | `C` | Clear the screen buffer (SSH/telnet only) |
+| `W` | Toggle message wrapping (SSH/telnet only) |
 
 ### The bundled TUI client (`tui.py`)
 
@@ -462,6 +463,12 @@ Details:
 
 - **History backfill** — on connect you immediately see the most recent
   entries, then live entries stream in on top.
+- **Fixed columns + message wrapping** — the SSH/telnet view shows
+  `TIME  HOST  SEV  APP  MESSAGE` in fixed-width columns (HOST falls back
+  to the source IP for devices without a hostname). Long messages wrap
+  onto continuation lines indented under MESSAGE, capped at
+  `terminal.wrap_lines` screen lines per entry (default 3) so one giant
+  message can't flood the view; the `W` key toggles wrapping live.
 - **Resize-aware** — the view redraws when you resize your terminal
   (SSH terminal resize and telnet NAWS are both supported).
 - **Always unauthenticated** — terminal connections never ask for
@@ -1030,6 +1037,12 @@ git pull
      sudo ./install.sh install        # rewrites the unit + daemon-reload
      sudo ./install.sh start
      ```
+     Re-running `install` **keeps the ports and bind host from your existing
+     unit** (it prints a "Preserving settings" line); pass `FETCHLOG_WEB_PORT`
+     / `FETCHLOG_UDP_PORT` / `FETCHLOG_HOST` explicitly to change them:
+     ```bash
+     sudo FETCHLOG_WEB_PORT=5200 ./install.sh install
+     ```
    - **Keep your current unit:** the old `python app.py` systemd unit still works
      (it starts the same auth + UDP lifespan). Just restart:
      ```bash
@@ -1063,7 +1076,7 @@ No. FetchLog automatically creates the schema, tables, and indexes on first star
 No. FetchLog automatically detects and installs missing dependencies on startup. When you set `db_type` to `postgresql`, the `psycopg2-binary` driver is installed for you if it's not already present.
 
 **Q: Why port 5514 instead of 514?**
-Port 514 is the standard syslog port but requires root/sudo privileges. Port 5514 works without elevated permissions. Use `--udp-port 514` with `sudo` if you need the standard port.
+Port 514 is the standard syslog port but requires root/sudo privileges. Port 5514 works without elevated permissions. Use `--udp-port 514` with `sudo` if you need the standard port. Service installs don't need root: `sudo FETCHLOG_UDP_PORT=514 ./install.sh install` grants the unit `CAP_NET_BIND_SERVICE` automatically so the unprivileged service user can bind it.
 
 **Q: Can the SSH/telnet live view share the web UI's port?**
 No. SSH, telnet, and HTTP are incompatible protocols and only one server can listen on a given TCP port — an SSH server must send its `SSH-2.0` banner the moment a client connects, while an HTTP server waits silently for a request, so they can't coexist on one socket. That's why the SSH view defaults to **web port + 1** (web on 5200 → SSH on 5201). The UDP syslog port is separate anyway (UDP vs TCP), and `tui.py` is the one terminal viewer that *does* use the web port, since it speaks HTTP/WebSocket.
