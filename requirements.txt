@@ -8,5 +8,7 @@ psycopg2-binary>=2.9.9
 # --- Authentication / shared-session SSO ---
 werkzeug>=3.0.0          # password hashing (scrypt) compatible with the sibling apps
 python-multipart>=0.0.6  # parse the login form POST in FastAPI
+# --- SSH live view (on by default at web port + 1; skipped if disabled with --ssh-port 0) ---
+asyncssh>=2.14.0
 # --- Production WSGI/ASGI process manager ---
 gunicorn>=22.0.0         # run with: gunicorn web_server:app -k uvicorn.workers.UvicornWorker -w 1

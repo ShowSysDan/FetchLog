@@ -77,7 +77,8 @@ def load_db_config(config_path: str) -> dict:
     return {"db_type": "sqlite", "sqlite_path": "logs.db"}
 
 
-def ensure_dependencies(db_type: str = "sqlite", auth_enabled: bool = False):
+def ensure_dependencies(db_type: str = "sqlite", auth_enabled: bool = False,
+                        ssh_enabled: bool = False):
     """Check that all required packages are importable; pip-install missing ones."""
     req_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "requirements.txt")
     requirements = _parse_requirements(req_path)
@@ -90,6 +91,9 @@ def ensure_dependencies(db_type: str = "sqlite", auth_enabled: bool = False):
         # psycopg2 is needed for PostgreSQL log storage OR for auth (the shared
         # session store is always PostgreSQL).
         if import_name == "psycopg2" and db_type != "postgresql" and not auth_enabled:
+            return True
+        # asyncssh is only needed when the SSH live view is enabled.
+        if import_name == "asyncssh" and not ssh_enabled:
             return True
         return False
 
@@ -176,7 +180,35 @@ def parse_args():
         "--db", type=str, default=None,
         help="SQLite database file path (overrides sqlite_path in config file)"
     )
+    parser.add_argument(
+        "--ssh-port", type=int, default=None,
+        help="TCP port for the SSH live log view (default: web port + 1; "
+             "overrides terminal.ssh_port in config; 0 disables)"
+    )
+    parser.add_argument(
+        "--telnet-port", type=int, default=None,
+        help="TCP port for the telnet live log view (overrides "
+             "terminal.telnet_port in config; 0 disables; off by default)"
+    )
     return parser.parse_args()
+
+
+def terminal_ports(args, db_config: dict) -> tuple[int, int]:
+    """Resolve the SSH/telnet live-view ports.
+
+    Precedence for SSH: CLI flag > terminal.ssh_port in config > web port + 1.
+    Telnet: CLI flag > terminal.telnet_port in config > disabled.
+    A value of 0 anywhere disables that listener.
+    """
+    term = db_config.get("terminal") or {}
+    if args.ssh_port is not None:
+        ssh = args.ssh_port
+    elif term.get("ssh_port") is not None:
+        ssh = int(term["ssh_port"])
+    else:
+        ssh = args.web_port + 1
+    telnet = args.telnet_port if args.telnet_port is not None else int(term.get("telnet_port") or 0)
+    return ssh, telnet
 
 
 async def run_app(args, db_config: dict):
@@ -201,6 +233,9 @@ async def run_app(args, db_config: dict):
     os.environ["FETCHLOG_DB_CONFIG"] = args.db_config
     if args.db:
         os.environ["FETCHLOG_SQLITE_PATH"] = args.db
+    ssh_port, telnet_port = terminal_ports(args, db_config)
+    os.environ["FETCHLOG_SSH_PORT"] = str(ssh_port)
+    os.environ["FETCHLOG_TELNET_PORT"] = str(telnet_port)
 
     auth_state = "enabled" if (db_config.get("auth") or {}).get("enabled") else "disabled"
 
@@ -217,14 +252,20 @@ async def run_app(args, db_config: dict):
                 args.web_port)
     logger.info("Authentication: %s", auth_state)
 
+    term_lines = ""
+    if ssh_port:
+        term_lines += "║" + f"  SSH view:    ssh -p {ssh_port} <this-host>"[:54].ljust(54) + "║\n"
+    if telnet_port:
+        term_lines += "║" + f"  Telnet view: telnet <this-host> {telnet_port}"[:54].ljust(54) + "║\n"
+
     print(f"""
 ╔══════════════════════════════════════════════════════╗
-║                   FetchLog v1.0                      ║
+║                   FetchLog v1.1                      ║
 ╠══════════════════════════════════════════════════════╣
 ║  UDP Syslog:  {args.host}:{args.udp_port:<30}║
 ║  Web UI:      http://localhost:{args.web_port:<21}║
 ║  Database:    {db_label:<38}║
-╠══════════════════════════════════════════════════════╣
+{term_lines}╠══════════════════════════════════════════════════════╣
 ║  Send syslog:                                        ║
 ║    logger -d -n 127.0.0.1 -P {args.udp_port:<5} "test message"     ║
 ║                                                      ║
@@ -244,8 +285,10 @@ def main():
         db_config["sqlite_path"] = args.db
     # Check and auto-install missing dependencies before importing app modules
     auth_enabled = bool((db_config.get("auth") or {}).get("enabled"))
+    ssh_port, _telnet_port = terminal_ports(args, db_config)
     ensure_dependencies(db_type=db_config.get("db_type", "sqlite"),
-                        auth_enabled=auth_enabled)
+                        auth_enabled=auth_enabled,
+                        ssh_enabled=ssh_port > 0)
     _load_app_modules()
     try:
         asyncio.run(run_app(args, db_config))

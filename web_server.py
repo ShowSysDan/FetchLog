@@ -26,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
+import terminal_server
 from auth import AuthManager
 from syslog_parser import SEVERITIES, FACILITIES, facility_name, severity_name
 from syslog_server import start_syslog_server
@@ -148,14 +149,34 @@ async def lifespan(app_: FastAPI):
         on_message=router.on_message, host=udp_host, port=udp_port, loop=loop)
     logger.info("UDP syslog server listening on %s:%d", udp_host, udp_port)
 
+    # ----- SSH / telnet live view -----
+    term_cfg = cfg.get("terminal") or {}
+
+    def _term_port(env_var: str, cfg_key: str) -> int:
+        value = os.environ.get(env_var)
+        if value:
+            return int(value)
+        return int(term_cfg.get(cfg_key) or 0)
+
+    ssh_port = _term_port("FETCHLOG_SSH_PORT", "ssh_port")
+    telnet_port = _term_port("FETCHLOG_TELNET_PORT", "telnet_port")
+    term_handles = []
+    if ssh_port or telnet_port:
+        term_handles = await terminal_server.start_servers(
+            host=udp_host, ssh_port=ssh_port, telnet_port=telnet_port,
+            database=database,
+            ssh_host_key=term_cfg.get("ssh_host_key") or "ssh_host_key")
+
     try:
         yield
     finally:
         transport.close()
+        for handle in term_handles:
+            handle.close()
         logger.info("Shutting down...")
 
 
-app = FastAPI(title="FetchLog", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="FetchLog", version="1.1.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
@@ -257,12 +278,13 @@ async def logout(request: Request):
 
 
 async def broadcast_log(entry: dict):
-    """Send a new log entry to all connected WebSocket clients."""
+    """Send a new log entry to all connected WebSocket and SSH/telnet clients."""
     global ws_clients
-    if not ws_clients:
-        return
     # Enrich entry with human-readable fields
     enriched = enrich_entry(entry)
+    await terminal_server.broadcast_entry(enriched)
+    if not ws_clients:
+        return
     dead = set()
     for ws in ws_clients:
         try:

@@ -6,6 +6,7 @@ __pycache__/
 *.db-shm
 .env
 db_config.json
+ssh_host_key
 venv/
 .venv/
 *.egg-info/
