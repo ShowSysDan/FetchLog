@@ -413,6 +413,7 @@ for debug, magenta for markers.
 | `Q` | Quit / disconnect |
 | `SPACE` | Pause / resume (new entries buffer while paused) |
 | `C` | Clear the screen buffer (SSH/telnet only) |
+| `W` | Toggle message wrapping (SSH/telnet only) |
 
 ### The bundled TUI client (`tui.py`)
 
@@ -462,6 +463,12 @@ Details:
 
 - **History backfill** — on connect you immediately see the most recent
   entries, then live entries stream in on top.
+- **Fixed columns + message wrapping** — the SSH/telnet view shows
+  `TIME  HOST  SEV  APP  MESSAGE` in fixed-width columns (HOST falls back
+  to the source IP for devices without a hostname). Long messages wrap
+  onto continuation lines indented under MESSAGE, capped at
+  `terminal.wrap_lines` screen lines per entry (default 3) so one giant
+  message can't flood the view; the `W` key toggles wrapping live.
 - **Resize-aware** — the view redraws when you resize your terminal
   (SSH terminal resize and telnet NAWS are both supported).
 - **Always unauthenticated** — terminal connections never ask for

@@ -15,6 +15,7 @@ Keys:
     q / Q       Disconnect
     SPACE       Pause / resume (entries buffer while paused)
     c / C       Clear the screen buffer
+    w / W       Toggle message wrapping (wrapped lines indent under MESSAGE)
 
 Enabled via db_config.json:
     "terminal": {"ssh_port": 2222, "telnet_port": 2323}
@@ -24,10 +25,10 @@ or CLI: python app.py --ssh-port 2222 --telnet-port 2323
 import asyncio
 import collections
 import datetime
-import itertools
 import logging
 import os
 import re
+import textwrap
 from typing import Callable, Optional
 
 logger = logging.getLogger("fetchlog.term")
@@ -47,15 +48,15 @@ SEVERITY_SHORT = {
     7: "DEBUG",
 }
 
-COL_TIME   = 14  # MM-DD HH:MM:SS
-COL_SOURCE = 15
-COL_HOST   = 14
-COL_SEV    = 5
-COL_APP    = 12
-FIXED_COLS = COL_TIME + 1 + COL_SOURCE + 1 + COL_HOST + 1 + COL_SEV + 1 + COL_APP + 1  # = 65
+COL_TIME = 14  # MM-DD HH:MM:SS
+COL_HOST = 16  # hostname, falling back to the source IP
+COL_SEV  = 5
+COL_APP  = 12
+FIXED_COLS = COL_TIME + 1 + COL_HOST + 1 + COL_SEV + 1 + COL_APP + 1  # = 51
 
 MAX_BUFFER = 500          # entries kept per session for redraws
 MIN_COLS, MIN_ROWS = 40, 8
+DEFAULT_WRAP_LINES = 3    # max screen lines per entry when wrapping is on
 
 # ---------------------------------------------------------------------------
 # ANSI helpers
@@ -113,8 +114,14 @@ def _time(entry: dict) -> str:
     return "?"
 
 
-def format_row(entry: dict, cols: int) -> str:
-    """One log entry as a colored, width-clamped terminal line."""
+def format_entry_lines(entry: dict, cols: int, wrap_lines: int = 1) -> list:
+    """One log entry as colored, width-clamped terminal lines.
+
+    With wrap_lines > 1, a long message wraps onto continuation lines
+    indented under the MESSAGE column (so the column grid stays aligned),
+    capped at wrap_lines total; the final line is truncated with '~' if the
+    message still doesn't fit.
+    """
     width = cols - 1
     if entry.get("is_marker"):
         label = _CTRL_RE.sub(".", str(entry.get("message") or "Marker"))
@@ -125,22 +132,34 @@ def format_row(entry: dict, cols: int) -> str:
             line = "-" * left + center + "-" * (pad - left)
         else:
             line = center[:width]
-        return f"{CSI}{_MARKER_SGR}m{line}{RESET}"
+        return [f"{CSI}{_MARKER_SGR}m{line}{RESET}"]
 
     sev = entry.get("severity")
     sgr = _SEV_SGR.get(sev, _RAW_SGR) if sev is not None else _RAW_SGR
     sev_str = SEVERITY_SHORT.get(sev, "RAW  ") if sev is not None else "RAW  "
     app = entry.get("app_name") or ("syslog" if entry.get("is_syslog") else "raw")
     mw = max(cols - FIXED_COLS, 10)
-    line = (
-        f"{_fit(_time(entry),              COL_TIME  )} "
-        f"{_fit(entry.get('source_ip'),    COL_SOURCE)} "
+
+    msg = _CTRL_RE.sub(".", str(entry.get("message") or ""))
+    if wrap_lines > 1 and len(msg) > mw:
+        chunks = textwrap.wrap(
+            msg, width=mw, max_lines=wrap_lines, placeholder="~",
+            break_long_words=True, drop_whitespace=True) or [""]
+    else:
+        chunks = [msg]
+
+    prefix = (
+        f"{_fit(_time(entry),  COL_TIME)} "
         f"{_fit(entry.get('hostname') or entry.get('source_ip'), COL_HOST)} "
-        f"{_fit(sev_str,                   COL_SEV   )} "
-        f"{_fit(app,                       COL_APP   )} "
-        f"{_fit(entry.get('message'),      mw        )}"
+        f"{_fit(sev_str,       COL_SEV )} "
+        f"{_fit(app,           COL_APP )} "
     )
-    return f"{CSI}{sgr}m{line[:width]}{RESET}"
+    indent = " " * FIXED_COLS
+    lines = []
+    for i, chunk in enumerate(chunks):
+        line = (prefix if i == 0 else indent) + _fit(chunk, mw)
+        lines.append(f"{CSI}{sgr}m{line[:width]}{RESET}")
+    return lines
 
 
 def _colored_line(segments: list, width: int) -> str:
@@ -175,7 +194,8 @@ class TerminalSession:
 
     def __init__(self, write: Callable[[str], None], database, label: str,
                  cols: int = 80, rows: int = 24,
-                 transport_name: str = "ssh", username: Optional[str] = None):
+                 transport_name: str = "ssh", username: Optional[str] = None,
+                 wrap_lines: int = DEFAULT_WRAP_LINES):
         self._write = write
         self.db = database
         self.label = label
@@ -184,12 +204,18 @@ class TerminalSession:
         self.cols = max(int(cols) if cols else 80, MIN_COLS)
         self.rows = max(int(rows) if rows else 24, MIN_ROWS)
         self.paused = False
+        self.wrap_lines = max(int(wrap_lines), 1)
+        self.wrap = self.wrap_lines > 1
         self.pending: list = []
         self.entries: collections.deque = collections.deque(maxlen=MAX_BUFFER)  # newest first
         self.total = 0
         self.err_count = 0
         self.warn_count = 0
         self.closed = False
+
+    def _entry_lines(self, entry: dict) -> list:
+        return format_entry_lines(
+            entry, self.cols, self.wrap_lines if self.wrap else 1)
 
     # ---- layout -----------------------------------------------------------
 
@@ -267,11 +293,13 @@ class TerminalSession:
             self._send(self._stats_bar())
             return
         self.entries.appendleft(entry)
-        self._send(
-            _cup(self.log_top, 1) + CSI + "L" +
-            format_row(entry, self.cols) +
-            self._stats_bar()
-        )
+        lines = self._entry_lines(entry)[: self.log_rows]
+        insert = CSI + "L" if len(lines) == 1 else f"{CSI}{len(lines)}L"
+        out = [_cup(self.log_top, 1), insert]
+        for i, line in enumerate(lines):
+            out.append(_cup(self.log_top + i, 1) + line)
+        out.append(self._stats_bar())
+        self._send("".join(out))
 
     def handle_key(self, key: str):
         if not key:
@@ -293,6 +321,9 @@ class TerminalSession:
             self.entries.clear()
             self.pending.clear()
             self.redraw()
+        elif k == "w":
+            self.wrap = not self.wrap
+            self.redraw()
 
     def resize(self, cols: int, rows: int):
         self.cols = max(int(cols) if cols else 80, MIN_COLS)
@@ -305,8 +336,15 @@ class TerminalSession:
         out = [CSI + "?25l", CSI + "r", CSI + "2J"]
         out.append(self._stats_bar())
         out.append(self._column_header())
-        for i, e in enumerate(itertools.islice(self.entries, self.log_rows)):
-            out.append(_cup(self.log_top + i, 1) + format_row(e, self.cols))
+        row = self.log_top
+        for entry in self.entries:
+            if row > self.log_bottom:
+                break
+            for line in self._entry_lines(entry):
+                if row > self.log_bottom:
+                    break
+                out.append(_cup(row, 1) + line)
+                row += 1
         out.append(self._key_bar())
         out.append(CSI + f"{self.log_top};{self.log_bottom}r")
         out.append(_cup(self.log_top, 1))
@@ -333,7 +371,6 @@ class TerminalSession:
         mw = max(self.cols - FIXED_COLS, 10)
         text = (
             f"{'TIME':<{COL_TIME}} "
-            f"{'SOURCE':<{COL_SOURCE}} "
             f"{'HOST':<{COL_HOST}} "
             f"{'SEV':<{COL_SEV}} "
             f"{'APP':<{COL_APP}} "
@@ -347,6 +384,7 @@ class TerminalSession:
             ("Q", "Quit"),
             ("SPACE", "Resume" if self.paused else "Pause"),
             ("C", "Clear"),
+            ("W", "Wrap off" if self.wrap else "Wrap on"),
         ]
         segs = []
         for key, action in keys:
@@ -362,6 +400,7 @@ class TerminalSession:
 
 _sessions: "set[TerminalSession]" = set()
 _db = None
+_wrap_lines = DEFAULT_WRAP_LINES
 
 
 async def broadcast_entry(entry: dict):
@@ -479,7 +518,7 @@ async def _handle_telnet(reader, writer):
         session = TerminalSession(
             write=write_str, database=_db, label=label,
             cols=dims["cols"], rows=dims["rows"],
-            transport_name="telnet")
+            transport_name="telnet", wrap_lines=_wrap_lines)
         _sessions.add(session)
         await session.start()
 
@@ -542,7 +581,7 @@ async def _handle_ssh_process(process):
 
     session = TerminalSession(
         write=process.stdout.write, database=_db, label=label,
-        cols=cols, rows=rows, transport_name="ssh")
+        cols=cols, rows=rows, transport_name="ssh", wrap_lines=_wrap_lines)
     _sessions.add(session)
     try:
         await session.start()
@@ -611,15 +650,17 @@ def _ensure_host_key(asyncssh, path: str):
 
 async def start_servers(*, host: str, ssh_port: int, telnet_port: int,
                         database,
-                        ssh_host_key: str = "ssh_host_key") -> list:
+                        ssh_host_key: str = "ssh_host_key",
+                        wrap_lines: int = DEFAULT_WRAP_LINES) -> list:
     """Start the enabled terminal servers. Returns handles with .close().
 
     Both listeners are always unauthenticated (independent of web auth), so
     each needs its own dedicated TCP port — SSH cannot share the web port
     because the two protocols are incompatible on the same socket.
     """
-    global _db
+    global _db, _wrap_lines
     _db = database
+    _wrap_lines = max(int(wrap_lines), 1)
 
     handles = []
 

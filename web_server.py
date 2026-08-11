@@ -175,7 +175,9 @@ async def lifespan(app_: FastAPI):
         term_handles = await terminal_server.start_servers(
             host=udp_host, ssh_port=ssh_port, telnet_port=telnet_port,
             database=database,
-            ssh_host_key=term_cfg.get("ssh_host_key") or "ssh_host_key")
+            ssh_host_key=term_cfg.get("ssh_host_key") or "ssh_host_key",
+            wrap_lines=int(term_cfg.get("wrap_lines")
+                           or terminal_server.DEFAULT_WRAP_LINES))
 
     try:
         yield

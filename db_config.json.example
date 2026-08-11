@@ -39,10 +39,14 @@
     "_terminal_comment_11": "Terminal connections are ALWAYS unauthenticated (read-only view),",
     "_terminal_comment_12": "  even when web auth below is enabled - any client connects with no",
     "_terminal_comment_13": "  credentials. Telnet is also unencrypted - trusted networks only.",
-    "_terminal_comment_14": "------------------------------------------------------------",
+    "_terminal_comment_14": "wrap_lines: max screen lines per entry - long messages wrap onto",
+    "_terminal_comment_15": "  indented continuation lines under MESSAGE (default 3; 1 disables",
+    "_terminal_comment_16": "  wrapping; the W key toggles it per session).",
+    "_terminal_comment_17": "------------------------------------------------------------",
     "terminal": {
         "telnet_port": 0,
-        "ssh_host_key": "ssh_host_key"
+        "ssh_host_key": "ssh_host_key",
+        "wrap_lines": 3
     },
 
     "_auth_comment_1": "------------------------------------------------------------",
