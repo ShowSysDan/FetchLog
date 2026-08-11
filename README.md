@@ -1069,7 +1069,7 @@ No. FetchLog automatically creates the schema, tables, and indexes on first star
 No. FetchLog automatically detects and installs missing dependencies on startup. When you set `db_type` to `postgresql`, the `psycopg2-binary` driver is installed for you if it's not already present.
 
 **Q: Why port 5514 instead of 514?**
-Port 514 is the standard syslog port but requires root/sudo privileges. Port 5514 works without elevated permissions. Use `--udp-port 514` with `sudo` if you need the standard port.
+Port 514 is the standard syslog port but requires root/sudo privileges. Port 5514 works without elevated permissions. Use `--udp-port 514` with `sudo` if you need the standard port. Service installs don't need root: `sudo FETCHLOG_UDP_PORT=514 ./install.sh install` grants the unit `CAP_NET_BIND_SERVICE` automatically so the unprivileged service user can bind it.
 
 **Q: Can the SSH/telnet live view share the web UI's port?**
 No. SSH, telnet, and HTTP are incompatible protocols and only one server can listen on a given TCP port — an SSH server must send its `SSH-2.0` banner the moment a client connects, while an HTTP server waits silently for a request, so they can't coexist on one socket. That's why the SSH view defaults to **web port + 1** (web on 5200 → SSH on 5201). The UDP syslog port is separate anyway (UDP vs TCP), and `tui.py` is the one terminal viewer that *does* use the web port, since it speaks HTTP/WebSocket.

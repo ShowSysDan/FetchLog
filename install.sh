@@ -182,6 +182,14 @@ cmd_install() {
         parent="$(dirname "${parent}")"
     done
 
+    # Ports below 1024 are privileged; grant the unprivileged service user
+    # the bind capability instead of running as root.
+    local cap_line=""
+    if (( UDP_PORT < 1024 )) || (( WEB_PORT < 1024 )); then
+        cap_line="AmbientCapabilities=CAP_NET_BIND_SERVICE"
+        info "Privileged port configured - adding CAP_NET_BIND_SERVICE to the unit."
+    fi
+
     # Write the systemd unit file
     info "Writing ${SERVICE_FILE}..."
     cat > "${SERVICE_FILE}" <<EOF
@@ -195,6 +203,7 @@ Wants=network.target
 Type=simple
 User=${SERVICE_USER}
 Group=${SERVICE_USER}
+${cap_line}
 
 # WorkingDirectory is required: web_server.py uses relative paths
 # for static files and Jinja2 templates ("static/" and "templates/")

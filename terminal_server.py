@@ -573,16 +573,35 @@ async def _handle_ssh_process(process):
         logger.info("SSH client disconnected: %s", label)
 
 
-def _ensure_host_key(asyncssh, path: str):
-    """Load the persistent SSH host key, generating one on first run so
-    clients don't see a changed-host-key warning on every restart."""
-    if os.path.isfile(path):
-        return asyncssh.read_private_key(path)
-    key = asyncssh.generate_private_key("ssh-ed25519", comment="fetchlog-host-key")
+def _write_host_key(key, path: str):
     with open(path, "wb") as f:
         f.write(key.export_private_key())
     os.chmod(path, 0o600)
     logger.info("Generated SSH host key: %s", path)
+
+
+def _ensure_host_key(asyncssh, path: str):
+    """Load the persistent SSH host key, generating one on first run so
+    clients don't see a changed-host-key warning on every restart.
+
+    Service installs often run from a directory the service user cannot
+    write to (e.g. a git checkout in someone's home dir), so if the key
+    can't be created at `path`, fall back to ~/.fetchlog/ssh_host_key.
+    """
+    fallback = os.path.join(os.path.expanduser("~"), ".fetchlog", "ssh_host_key")
+    for candidate in (path, fallback):
+        if os.path.isfile(candidate):
+            return asyncssh.read_private_key(candidate)
+    key = asyncssh.generate_private_key("ssh-ed25519", comment="fetchlog-host-key")
+    try:
+        _write_host_key(key, path)
+    except PermissionError:
+        os.makedirs(os.path.dirname(fallback), mode=0o700, exist_ok=True)
+        _write_host_key(key, fallback)
+        logger.warning(
+            "No write permission for SSH host key at %s - stored it at %s "
+            "instead (set terminal.ssh_host_key in db_config.json to a "
+            "writable path to control this)", os.path.abspath(path), fallback)
     return key
 
 
