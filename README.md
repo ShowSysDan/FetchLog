@@ -58,7 +58,7 @@ Built to handle **300+ devices** simultaneously with no performance issues.
 - **Auto Dependency Install** — Missing Python packages are detected and installed automatically on startup
 - **Auto Host Tracking** — Automatically detects and tracks all devices that send messages, with renameable display names
 - **Severity Color Coding** — Syslog messages are color-coded by severity (red for errors, yellow for warnings, etc.). Non-syslog messages display in neutral gray
-- **Terminal Live View** — htop-style full-color live stream in any terminal: a bundled TUI client, plus embedded SSH and telnet servers (newest entries on top, rolling off the bottom)
+- **Terminal Live View** — htop-style full-color live stream in any terminal: an embedded SSH server (on by default at web port + 1), an optional telnet listener, and a bundled TUI client (newest entries on top, rolling off the bottom)
 
 ---
 
@@ -206,7 +206,7 @@ python app.py [OPTIONS]
 | `--web-port` | `8080` | HTTP port for the web UI |
 | `--host` | `0.0.0.0` | Bind address (all interfaces by default) |
 | `--db-config` | `db_config.json` | Path to the database configuration file (see [Database Configuration File](#database-configuration-file)) |
-| `--ssh-port` | off | TCP port for the embedded SSH live view (see [Terminal Live View](#terminal-live-view)); `0` disables |
+| `--ssh-port` | web port + 1 | TCP port for the embedded SSH live view (see [Terminal Live View](#terminal-live-view)); `0` disables |
 | `--telnet-port` | off | TCP port for the telnet live view; `0` disables |
 
 The database backend (SQLite vs PostgreSQL), file path, credentials, and schema are all controlled by the config file — not CLI flags. This means your startup command stays the same regardless of which database you use.
@@ -226,8 +226,14 @@ python app.py --udp-port 1514 --web-port 9090 --db-config /etc/fetchlog/db_confi
 # Bind to specific interface
 python app.py --host 192.168.1.100
 
-# Also serve the terminal live view over SSH and telnet
+# The SSH live view follows the web port automatically (here: SSH on 5201)
+python app.py --web-port 5200
+
+# Pin the SSH port yourself, and also enable telnet
 python app.py --ssh-port 2222 --telnet-port 2323
+
+# Disable the SSH live view
+python app.py --ssh-port 0
 ```
 
 On startup you'll see:
@@ -430,21 +436,27 @@ FetchLog can also *be* the server: it embeds its own SSH server (via
 `asyncssh` — no system `sshd` involved) and a telnet listener, so any
 terminal on the network can connect directly:
 
+The SSH view is **on by default at web port + 1** — run the app on web
+port 5200 and the SSH view is at 5201, no flags needed:
+
 ```bash
-# Enable at launch
+python app.py --web-port 5200
+
+# From any client machine:
+ssh -p 5201 anyname@your-server        # any username, no password — ever
+
+# Pin a different SSH port, or disable with 0; telnet is off unless enabled
 python app.py --ssh-port 2222 --telnet-port 2323
-
-# ...or persistently in db_config.json
-#   "terminal": {"ssh_port": 2222, "telnet_port": 2323}
-
-# Then, from any client machine:
-ssh -p 2222 anyname@your-server        # any username, no password — ever
 telnet your-server 2323
+
+# ...or set them persistently in db_config.json
+#   "terminal": {"ssh_port": 2222, "telnet_port": 2323}
 ```
 
-Both listeners are **off by default**. On first start with SSH enabled, a
-host key is generated at `ssh_host_key` (configurable via
-`terminal.ssh_host_key`) and reused thereafter.
+On first start a host key is generated at `ssh_host_key` (configurable via
+`terminal.ssh_host_key`) and reused thereafter, so clients don't see
+changed-host-key warnings. If the SSH port is already taken, FetchLog logs
+an error and keeps running without the SSH view rather than failing to start.
 
 Details:
 
@@ -460,8 +472,8 @@ Details:
   FetchLog to a trusted interface or firewall the terminal ports.
 - **Dedicated ports required** — the SSH/telnet listeners cannot share
   the web UI's port: SSH, telnet, and HTTP are incompatible protocols,
-  and only one server can own a TCP port. Pick any free ports
-  (2222/2323 are the conventional choices).
+  and only one server can own a TCP port. That's why the SSH view
+  defaults to the next port up from the web UI (web + 1).
 - **Telnet is unencrypted** — log content travels in plaintext. Use it
   only on trusted networks, or stick with SSH.
 - Like the web UI's WebSocket fan-out, the embedded servers live in the
@@ -965,6 +977,12 @@ gunicorn web_server:app --worker-class uvicorn.workers.UvicornWorker --workers 1
 > environment variables because the UDP listener is started by the app's startup
 > lifespan (not a CLI flag) so it also runs under gunicorn.
 
+> **Terminal live view under gunicorn:** the SSH view's *web port + 1* default
+> only applies to `python app.py` (gunicorn owns the bind, so the app can't see
+> the web port). Under gunicorn, enable it explicitly with the
+> `FETCHLOG_SSH_PORT` / `FETCHLOG_TELNET_PORT` environment variables or
+> `"terminal": {"ssh_port": ...}` in `db_config.json`.
+
 For development you can still run `python app.py` (which launches uvicorn
 directly and starts the same lifespan), and you can disable auth entirely with
 `"enabled": false`.
@@ -1048,7 +1066,7 @@ No. FetchLog automatically detects and installs missing dependencies on startup.
 Port 514 is the standard syslog port but requires root/sudo privileges. Port 5514 works without elevated permissions. Use `--udp-port 514` with `sudo` if you need the standard port.
 
 **Q: Can the SSH/telnet live view share the web UI's port?**
-No. SSH, telnet, and HTTP are incompatible protocols and only one server can listen on a given TCP port — an SSH server must send its `SSH-2.0` banner the moment a client connects, while an HTTP server waits silently for a request, so they can't coexist on one socket. Give each listener its own port (`--ssh-port 2222 --telnet-port 2323` are the conventional picks). The UDP syslog port is separate anyway (UDP vs TCP), and `tui.py` is the one terminal viewer that *does* use the web port, since it speaks HTTP/WebSocket.
+No. SSH, telnet, and HTTP are incompatible protocols and only one server can listen on a given TCP port — an SSH server must send its `SSH-2.0` banner the moment a client connects, while an HTTP server waits silently for a request, so they can't coexist on one socket. That's why the SSH view defaults to **web port + 1** (web on 5200 → SSH on 5201). The UDP syslog port is separate anyway (UDP vs TCP), and `tui.py` is the one terminal viewer that *does* use the web port, since it speaks HTTP/WebSocket.
 
 **Q: Does the SSH live view need sshd, or a login?**
 Neither. The SSH server is embedded in the FetchLog process itself (via `asyncssh`) with its own auto-generated host key — the system's sshd is not involved and no OS accounts are used. Terminal connections are always unauthenticated, even when the web portal's login is enabled; see [Terminal Live View](#terminal-live-view).

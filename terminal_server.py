@@ -605,10 +605,15 @@ async def start_servers(*, host: str, ssh_port: int, telnet_port: int,
     handles = []
 
     if telnet_port:
-        server = await asyncio.start_server(_handle_telnet, host, telnet_port)
-        handles.append(server)
-        logger.info("Telnet live view on %s:%d (unauthenticated) - telnet is "
-                    "unencrypted, use only on trusted networks", host, telnet_port)
+        try:
+            server = await asyncio.start_server(_handle_telnet, host, telnet_port)
+        except OSError as exc:
+            logger.error("Telnet live view disabled - cannot listen on %s:%d: %s",
+                         host, telnet_port, exc)
+        else:
+            handles.append(server)
+            logger.info("Telnet live view on %s:%d (unauthenticated) - telnet is "
+                        "unencrypted, use only on trusted networks", host, telnet_port)
 
     if ssh_port:
         try:
@@ -617,17 +622,22 @@ async def start_servers(*, host: str, ssh_port: int, telnet_port: int,
             logger.error("asyncssh is not installed - SSH live view disabled. "
                          "Install it with: pip install asyncssh")
         else:
-            key = _ensure_host_key(asyncssh, ssh_host_key)
-            server = await asyncssh.listen(
-                host, ssh_port,
-                server_host_keys=[key],
-                server_factory=_make_ssh_server_class(asyncssh),
-                process_factory=_handle_ssh_process,
-                encoding="utf-8",
-                line_editor=False,   # deliver keypresses immediately, unbuffered
-            )
-            handles.append(server)
-            logger.info("SSH live view on %s:%d (unauthenticated) - connect "
-                        "with: ssh -p %d <this-host>", host, ssh_port, ssh_port)
+            try:
+                key = _ensure_host_key(asyncssh, ssh_host_key)
+                server = await asyncssh.listen(
+                    host, ssh_port,
+                    server_host_keys=[key],
+                    server_factory=_make_ssh_server_class(asyncssh),
+                    process_factory=_handle_ssh_process,
+                    encoding="utf-8",
+                    line_editor=False,   # deliver keypresses immediately, unbuffered
+                )
+            except OSError as exc:
+                logger.error("SSH live view disabled - cannot listen on %s:%d: %s",
+                             host, ssh_port, exc)
+            else:
+                handles.append(server)
+                logger.info("SSH live view on %s:%d (unauthenticated) - connect "
+                            "with: ssh -p %d <this-host>", host, ssh_port, ssh_port)
 
     return handles

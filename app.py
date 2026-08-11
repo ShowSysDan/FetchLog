@@ -182,8 +182,8 @@ def parse_args():
     )
     parser.add_argument(
         "--ssh-port", type=int, default=None,
-        help="TCP port for the SSH live log view (overrides terminal.ssh_port "
-             "in config; 0 disables; off by default)"
+        help="TCP port for the SSH live log view (default: web port + 1; "
+             "overrides terminal.ssh_port in config; 0 disables)"
     )
     parser.add_argument(
         "--telnet-port", type=int, default=None,
@@ -194,9 +194,19 @@ def parse_args():
 
 
 def terminal_ports(args, db_config: dict) -> tuple[int, int]:
-    """Resolve the SSH/telnet live-view ports (CLI flag beats config file)."""
+    """Resolve the SSH/telnet live-view ports.
+
+    Precedence for SSH: CLI flag > terminal.ssh_port in config > web port + 1.
+    Telnet: CLI flag > terminal.telnet_port in config > disabled.
+    A value of 0 anywhere disables that listener.
+    """
     term = db_config.get("terminal") or {}
-    ssh = args.ssh_port if args.ssh_port is not None else int(term.get("ssh_port") or 0)
+    if args.ssh_port is not None:
+        ssh = args.ssh_port
+    elif term.get("ssh_port") is not None:
+        ssh = int(term["ssh_port"])
+    else:
+        ssh = args.web_port + 1
     telnet = args.telnet_port if args.telnet_port is not None else int(term.get("telnet_port") or 0)
     return ssh, telnet
 
