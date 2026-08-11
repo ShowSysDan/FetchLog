@@ -1030,6 +1030,12 @@ git pull
      sudo ./install.sh install        # rewrites the unit + daemon-reload
      sudo ./install.sh start
      ```
+     Re-running `install` **keeps the ports and bind host from your existing
+     unit** (it prints a "Preserving settings" line); pass `FETCHLOG_WEB_PORT`
+     / `FETCHLOG_UDP_PORT` / `FETCHLOG_HOST` explicitly to change them:
+     ```bash
+     sudo FETCHLOG_WEB_PORT=5200 ./install.sh install
+     ```
    - **Keep your current unit:** the old `python app.py` systemd unit still works
      (it starts the same auth + UDP lifespan). Just restart:
      ```bash
