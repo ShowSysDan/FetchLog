@@ -5,7 +5,7 @@ Also handles raw/plain-text messages from non-syslog sources.
 """
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 # Syslog facility names
@@ -64,15 +64,22 @@ def severity_name(code: int) -> str:
 
 
 def parse_rfc3164_timestamp(ts_str: str) -> Optional[str]:
-    """Parse RFC 3164 timestamp (e.g., 'Jan  5 14:30:00') into ISO format."""
+    """Parse RFC 3164 timestamp (e.g., 'Jan  5 14:30:00') into UTC ISO format.
+
+    RFC 3164 timestamps carry no year or timezone; senders use their local
+    time. We assume the sender shares this server's timezone and convert
+    to UTC for storage.
+    """
     try:
-        now = datetime.utcnow()
-        parsed = datetime.strptime(ts_str, "%b %d %H:%M:%S")
-        parsed = parsed.replace(year=now.year)
+        now = datetime.now()
+        # Parse with an explicit year so Feb 29 works in leap years
+        parsed = datetime.strptime(f"{now.year} {ts_str}", "%Y %b %d %H:%M:%S")
         # If the parsed date is in the future by more than a day, assume previous year
         if parsed > now and (parsed - now).days > 1:
             parsed = parsed.replace(year=now.year - 1)
-        return parsed.isoformat() + "Z"
+        # Naive -> aware in the server's local zone -> UTC
+        utc = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return utc.isoformat() + "Z"
     except ValueError:
         return None
 
